@@ -11,6 +11,7 @@ mod notes_app;
 mod parse;
 mod render;
 mod slide;
+mod testfire;
 mod theme;
 mod transition;
 
@@ -69,6 +70,27 @@ fn main() -> Result<()> {
 
     match cli.command {
         Some(Command::Notes { socket }) => run_notes_viewer(presentation, socket),
+        Some(Command::Test {
+            slide,
+            widths,
+            height,
+        }) => {
+            let theme = if let Some(theme_path) = &cli.theme {
+                theme::load_theme(theme_path)?
+            } else if let Some(theme_path) =
+                front_matter.as_ref().and_then(|fm| fm.theme.as_ref())
+            {
+                let theme_file = cli
+                    .file
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .join(theme_path);
+                theme::load_theme(&theme_file)?
+            } else {
+                default_theme()
+            };
+            testfire::run(&presentation, &theme, slide - 1, &widths, height)
+        }
         None => run_presenter(presentation, cli, front_matter),
     }
 }

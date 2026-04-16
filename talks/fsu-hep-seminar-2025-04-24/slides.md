@@ -321,7 +321,9 @@ Train a neural network surrogate that learns the {key: full detector response}.
 [Graph Neural Network] -> [Occupancy Head]
 ```
 
-<!-- chunk -->
+---
+
+# Differentiable Inference
 
 Freeze the surrogate. Use it as a {key: differentiable bridge} to infer optimal gains via gradient descent.
 

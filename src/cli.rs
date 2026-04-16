@@ -23,4 +23,18 @@ pub enum Command {
         #[arg(long)]
         socket: Option<PathBuf>,
     },
+    /// Render a single slide to stdout for debugging (no TUI)
+    Test {
+        /// Slide number (1-indexed)
+        #[arg(long, default_value = "1")]
+        slide: usize,
+
+        /// Terminal widths to test (comma-separated, e.g. "40,80,120")
+        #[arg(long, value_delimiter = ',', default_values_t = vec![40, 80, 120])]
+        widths: Vec<u16>,
+
+        /// Terminal height to use
+        #[arg(long, default_value = "30")]
+        height: u16,
+    },
 }

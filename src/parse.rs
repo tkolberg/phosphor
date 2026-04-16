@@ -162,6 +162,11 @@ fn convert_node<'a>(node: &'a AstNode<'a>, base_dir: &Path) -> Option<SlideEleme
                         source: code_block.literal.trim_end().to_string(),
                     })
                 }
+                "wireframe" => {
+                    Some(SlideElement::Wireframe {
+                        source: code_block.literal.trim_end().to_string(),
+                    })
+                }
                 _ => {
                     let language = if code_block.info.is_empty() {
                         None

@@ -5,6 +5,19 @@ theme: ../../themes/synthwave.yaml
 ghostty: ~/.config/ghostty/fsu-talk
 ---
 
+# DiRAC Detector
+
+```wireframe
+model: detector
+rotate: 35,20
+spin: 8
+particles: on
+```
+
+<!-- notes: Live wireframe of the DiRAC single-tower calorimeter, rendered from Geant4 geometry. Let it spin while the audience settles in. -->
+
+---
+
 # CYBERDYNE SYSTEMS MODEL 101
 
 ## SCINTILLATOR CALORIMETRY DIVISION
@@ -332,11 +345,16 @@ Freeze the surrogate. Use it as a {key: differentiable bridge} to infer optimal 
 
 ---
 
-# Detector Cross Section
+# Detector Geometry — Wireframe
 
-![Simulated detector geometry](images/detector_cross_section.png)
+```wireframe
+model: detector
+rotate: 35,20
+spin: 8
+particles: on
+```
 
-<!-- notes: Simplified detector cross-section. Blue inner ring: silicon tracker. Orange: EM calorimeter (Pb/Si). Purple: HAD calorimeter (Steel/Scintillator). The geometry is close to HGCAL concepts. -->
+<!-- notes: Wireframe rendered live from the Geant4 geometry. Single-tower sampling calorimeter: 6 EM layers (Pb/Si, orange/blue) followed by 4 HAD layers (Steel/Scintillator, purple/green). Red X marks the EM/HAD boundary. 3×3 sensor grids visible on first and last layers of each section. Rotates continuously. -->
 
 ---
 

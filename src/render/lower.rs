@@ -39,6 +39,7 @@ impl Lower for SlideElement {
                 base_dir,
             } => lower_image(path, alt, base_dir, ctx),
             SlideElement::Diagram { source } => lower_diagram(source, ctx),
+            SlideElement::Wireframe { source } => lower_wireframe(source, ctx),
             SlideElement::Spacer => vec![RenderOp::Spacer { lines: 1 }],
             SlideElement::ChunkBreak => vec![], // should never reach here
         }
@@ -540,6 +541,25 @@ fn lower_image(
             ]
         }
     }
+}
+
+fn lower_wireframe(source: &str, ctx: &LowerContext) -> Vec<RenderOp> {
+    let spec = crate::wireframe::parse_wireframe_spec(source);
+    // Use ~90% of available height for the wireframe
+    let wf_rows = ((ctx.window_height as f32) * 0.9) as u16;
+    let wf_rows = wf_rows.max(10);
+    let wf_cols = ctx.window_width;
+
+    let lines = crate::wireframe::render_wireframe(&spec, wf_cols, wf_rows);
+    let width = wf_cols;
+
+    let mut ops = Vec::new();
+    ops.push(RenderOp::RenderImage {
+        lines,
+        width,
+    });
+    ops.push(RenderOp::Spacer { lines: 1 });
+    ops
 }
 
 fn lower_diagram(source: &str, ctx: &LowerContext) -> Vec<RenderOp> {

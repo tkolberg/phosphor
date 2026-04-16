@@ -30,10 +30,21 @@ pub struct App {
     should_quit: bool,
     notes_server: Option<NotesServer>,
     transition: Option<Transition>,
+    /// Whether we're running inside Ghostty (can change font size).
+    in_ghostty: bool,
+    /// Current font size state: true = small (wireframe), false = normal.
+    small_font: bool,
+    /// The normal font size to restore when leaving wireframe slides.
+    normal_font_size: u16,
+    /// The small font size for wireframe slides.
+    wireframe_font_size: u16,
+    /// Ghostty window ID for the presenter (captured at startup).
+    ghostty_window_id: Option<String>,
 }
 
 impl App {
     pub fn new(presentation: Presentation, theme: Theme) -> Self {
+        let in_ghostty = std::env::var("PHOSPHOR_IN_GHOSTTY").is_ok();
         Self {
             presentation,
             theme,
@@ -42,6 +53,11 @@ impl App {
             should_quit: false,
             notes_server: None,
             transition: None,
+            in_ghostty,
+            small_font: false,
+            normal_font_size: 24,
+            wireframe_font_size: 8,
+            ghostty_window_id: None,
         }
     }
 
@@ -49,7 +65,14 @@ impl App {
         self.notes_server = Some(server);
     }
 
+    pub fn set_ghostty_window_id(&mut self, id: String) {
+        self.ghostty_window_id = Some(id);
+    }
+
     pub fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
+        // Set font size for the initial slide
+        self.sync_font_size();
+
         while !self.should_quit {
             // Accept any pending notes viewer connections
             if let Some(ref mut server) = self.notes_server {
@@ -81,6 +104,7 @@ impl App {
                 }
             }
         }
+        self.restore_font_size();
         Ok(())
     }
 
@@ -339,7 +363,7 @@ impl App {
                 .iter()
                 .take(self.visible_chunks)
                 .flat_map(|c| &c.elements)
-                .any(|e| matches!(e, SlideElement::Chart { .. } | SlideElement::Diagram { .. }))
+                .any(|e| matches!(e, SlideElement::Chart { .. } | SlideElement::Diagram { .. } | SlideElement::Wireframe { .. }))
         } else {
             false
         }
@@ -428,6 +452,7 @@ impl App {
         }
 
         self.broadcast_notes();
+        self.sync_font_size();
     }
 
     fn broadcast_notes(&mut self) {
@@ -438,6 +463,29 @@ impl App {
                 visible_chunks: self.visible_chunks,
             });
         }
+    }
+
+    /// Check if the current slide has a wireframe element.
+    fn current_slide_has_wireframe(&self) -> bool {
+        if let Some(slide) = self.presentation.slides.get(self.current_slide) {
+            slide
+                .chunks
+                .iter()
+                .flat_map(|c| &c.elements)
+                .any(|e| matches!(e, SlideElement::Wireframe { .. }))
+        } else {
+            false
+        }
+    }
+
+    /// Switch Ghostty font size (currently disabled — AppleScript targeting not yet solved).
+    fn sync_font_size(&mut self) {
+        // TODO: find a reliable way to target the presenter Ghostty window
+    }
+
+    /// Restore normal font size (call on quit).
+    fn restore_font_size(&mut self) {
+        // TODO: re-enable when sync_font_size is working
     }
 }
 

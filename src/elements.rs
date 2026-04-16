@@ -45,6 +45,9 @@ pub enum SlideElement {
         #[serde(skip)]
         base_dir: PathBuf,
     },
+    Wireframe {
+        source: String,
+    },
     HorizontalRule,
     Spacer,
     /// Internal marker for chunk boundaries (not rendered)

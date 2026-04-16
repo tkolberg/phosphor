@@ -15,6 +15,7 @@ mod slide;
 mod testfire;
 mod theme;
 mod transition;
+mod wireframe;
 
 use std::io;
 
@@ -139,6 +140,44 @@ fn run_presenter(
     let socket_ref_path = std::env::temp_dir().join("phosphor-notes.sock");
     std::fs::write(&socket_ref_path, socket_path.display().to_string()).ok();
 
+    // Capture the presenter's Ghostty window ID before launching the notes window
+    let presenter_window_id = if std::env::var("PHOSPHOR_IN_GHOSTTY").is_ok() {
+        std::process::Command::new("osascript")
+            .args(["-e", r#"tell application "Ghostty" to get id of front window"#])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+    } else {
+        None
+    };
+
+    // Auto-launch the notes viewer in a new Ghostty window via a temp launcher script
+    let exe = std::env::current_exe().unwrap_or_default();
+    let file_abs = std::fs::canonicalize(&cli.file).unwrap_or_else(|_| cli.file.clone());
+    let launcher_path = std::env::temp_dir().join("phosphor-notes-launch.sh");
+    std::fs::write(
+        &launcher_path,
+        format!(
+            "#!/bin/sh\nexec '{}' '{}' notes --socket '{}'\n",
+            exe.display(),
+            file_abs.display(),
+            socket_path.display(),
+        ),
+    )
+    .ok();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&launcher_path, std::fs::Permissions::from_mode(0o755)).ok();
+    }
+    let _ = std::process::Command::new("open")
+        .args(["-na", "Ghostty.app", "--args"])
+        .arg("--window-width=120")
+        .arg("--window-height=10")
+        .arg(format!("--command={}", launcher_path.display()))
+        .spawn();
+
     // Set up terminal
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
@@ -149,6 +188,9 @@ fn run_presenter(
 
     let mut app = App::new(presentation, theme);
     app.set_notes_server(notes_server);
+    if let Some(wid) = presenter_window_id {
+        app.set_ghostty_window_id(wid);
+    }
     app.run(&mut terminal)?;
 
     Ok(())
@@ -226,7 +268,6 @@ fn launch_in_ghostty(cli: &Cli, ghostty_config: &std::path::Path) -> Result<()> 
     let status = std::process::Command::new("open")
         .args(["-na", "Ghostty.app", "--args"])
         .arg(format!("--config-file={}", config_abs.display()))
-        .arg("--window-decoration=false")
         .arg(format!("--command={}", shell_cmd))
         .status()
         .wrap_err("Failed to launch Ghostty")?;

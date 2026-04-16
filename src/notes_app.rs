@@ -70,6 +70,9 @@ impl NotesApp {
                 self.current_slide = index;
                 self.visible_chunks = visible_chunks;
             }
+            Some(NoteMessage::FontSize { .. }) => {
+                // Font size is handled by the presenter via AppleScript; ignore here.
+            }
             Some(NoteMessage::Quit) => {
                 self.should_quit = true;
             }

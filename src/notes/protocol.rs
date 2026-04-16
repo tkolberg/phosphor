@@ -11,6 +11,10 @@ pub enum NoteMessage {
         index: usize,
         visible_chunks: usize,
     },
+    /// Request the notes viewer to change the Ghostty font size.
+    FontSize {
+        size: u16,
+    },
     Quit,
 }
 

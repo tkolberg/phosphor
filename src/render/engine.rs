@@ -57,6 +57,10 @@ impl<'a> RenderEngine<'a> {
         self.theme = Some(theme);
     }
 
+    pub fn cursor_row(&self) -> u16 {
+        self.cursor_row
+    }
+
     pub fn set_default_colors(&mut self, fg: Option<Color>, bg: Option<Color>) {
         self.default_fg = fg;
         self.default_bg = bg;

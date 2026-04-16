@@ -2,6 +2,7 @@
 title: AI as Lubricant for HEP Experiments
 author: Ted Kolberg
 theme: ../../themes/synthwave.yaml
+ghostty: ~/.config/ghostty/fsu-talk
 ---
 
 # CYBERDYNE SYSTEMS MODEL 101

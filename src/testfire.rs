@@ -69,6 +69,7 @@ pub fn run(
             window_width: content_width,
             window_height: content_height,
             theme,
+            visible_chunks: slide.chunks.len(),
         };
 
         // Lower all chunks

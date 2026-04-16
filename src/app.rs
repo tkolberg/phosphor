@@ -161,6 +161,7 @@ impl App {
                 window_width: content_area.width,
                 window_height: content_area.height,
                 theme: &self.theme,
+                visible_chunks: self.visible_chunks,
             };
 
             let mut all_ops = Vec::new();

@@ -57,13 +57,8 @@ fn main() -> Result<()> {
     let (front_matter, markdown) = metadata::extract_front_matter(&content);
 
     // Ghostty relaunch: CLI flag > front matter > skip.
-    // PHOSPHOR_IN_GHOSTTY env var prevents infinite recursion.
+    // PHOSPHOR_IN_GHOSTTY prevents infinite recursion (set by the relaunched instance).
     if std::env::var("PHOSPHOR_IN_GHOSTTY").is_err() {
-        let base_dir = cli
-            .file
-            .parent()
-            .unwrap_or(std::path::Path::new("."));
-
         let ghostty_config = cli.ghostty_config.clone().or_else(|| {
             front_matter
                 .as_ref()
@@ -72,7 +67,10 @@ fn main() -> Result<()> {
         });
 
         if let Some(ref config) = ghostty_config {
-            return launch_in_ghostty(&cli, config);
+            let in_ghostty = std::env::var("TERM_PROGRAM")
+                .map(|v| v.eq_ignore_ascii_case("ghostty"))
+                .unwrap_or(false);
+            return launch_in_ghostty(&cli, config, in_ghostty);
         }
     }
 
@@ -175,15 +173,22 @@ fn run_presenter(
     std::fs::write(
         &notes_config_path,
         format!(
-            "window-width = 120\nwindow-height = 10\ncommand = {}\n",
+            "window-width = 120\nwindow-height = 10\nwindow-save-state = never\ncommand = {}\n",
             launcher_path.display(),
         ),
     )
     .ok();
-    let _ = std::process::Command::new("open")
-        .args(["-na", "Ghostty.app", "--args"])
-        .arg(format!("--config-file={}", notes_config_path.display()))
-        .spawn();
+    if std::env::var("PHOSPHOR_IN_GHOSTTY").is_ok() {
+        let ghostty_bin = "/Applications/Ghostty.app/Contents/MacOS/ghostty";
+        let _ = std::process::Command::new(ghostty_bin)
+            .arg(format!("--config-file={}", notes_config_path.display()))
+            .spawn();
+    } else {
+        let _ = std::process::Command::new("open")
+            .args(["-na", "Ghostty.app", "--args"])
+            .arg(format!("--config-file={}", notes_config_path.display()))
+            .spawn();
+    }
 
     // Set up terminal
     enable_raw_mode()?;
@@ -252,7 +257,7 @@ fn expand_tilde(path: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(path)
 }
 
-fn launch_in_ghostty(cli: &Cli, ghostty_config: &std::path::Path) -> Result<()> {
+fn launch_in_ghostty(cli: &Cli, ghostty_config: &std::path::Path, already_in_ghostty: bool) -> Result<()> {
     let exe = std::env::current_exe().wrap_err("Failed to find phosphor executable")?;
     let file = std::fs::canonicalize(&cli.file)
         .wrap_err_with(|| format!("Failed to resolve {:?}", cli.file))?;
@@ -272,12 +277,26 @@ fn launch_in_ghostty(cli: &Cli, ghostty_config: &std::path::Path) -> Result<()> 
 
     let shell_cmd = format!("/bin/zsh -c {}", shell_escape(&cmd));
 
-    let status = std::process::Command::new("open")
-        .args(["-na", "Ghostty.app", "--args"])
-        .arg(format!("--config-file={}", config_abs.display()))
-        .arg(format!("--command={}", shell_cmd))
-        .status()
-        .wrap_err("Failed to launch Ghostty window")?;
+    let status = if already_in_ghostty {
+        // Use the Ghostty CLI directly — opens a new window in the existing app
+        // without spawning a new instance (which would restore the entire session).
+        let ghostty_bin = std::path::PathBuf::from("/Applications/Ghostty.app/Contents/MacOS/ghostty");
+        std::process::Command::new(&ghostty_bin)
+            .arg(format!("--config-file={}", config_abs.display()))
+            .arg(format!("--command={}", shell_cmd))
+            .spawn()
+            .wrap_err("Failed to launch Ghostty window")?;
+        // The ghostty CLI spawns asynchronously; the original terminal returns immediately.
+        eprintln!("Launched Ghostty with config: {}", config_abs.display());
+        return Ok(());
+    } else {
+        std::process::Command::new("open")
+            .args(["-na", "Ghostty.app", "--args"])
+            .arg(format!("--config-file={}", config_abs.display()))
+            .arg(format!("--command={}", shell_cmd))
+            .status()
+            .wrap_err("Failed to launch Ghostty window")?
+    };
 
     if !status.success() {
         return Err(color_eyre::eyre::eyre!("Ghostty window launch failed"));

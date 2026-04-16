@@ -61,22 +61,24 @@ pub fn parse_presentation(markdown: &str, base_dir: &Path) -> Presentation {
 }
 
 fn build_slide(elements: Vec<SlideElement>, notes: Option<String>) -> Slide {
-    // Split elements into chunks on ChunkBreak markers
+    // Split elements into chunks on ChunkBreak markers.
+    // A ChunkBreak always starts a new chunk (even if empty), so that
+    // camera-only advances on wireframe slides work without dummy content.
     let mut chunks = Vec::new();
     let mut current_chunk = Vec::new();
+    let mut saw_break = false;
 
     for element in elements {
         if matches!(element, SlideElement::ChunkBreak) {
-            if !current_chunk.is_empty() {
-                chunks.push(SlideChunk {
-                    elements: std::mem::take(&mut current_chunk),
-                });
-            }
+            chunks.push(SlideChunk {
+                elements: std::mem::take(&mut current_chunk),
+            });
+            saw_break = true;
         } else {
             current_chunk.push(element);
         }
     }
-    if !current_chunk.is_empty() {
+    if !current_chunk.is_empty() || saw_break {
         chunks.push(SlideChunk {
             elements: current_chunk,
         });

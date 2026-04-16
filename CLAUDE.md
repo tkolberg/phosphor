@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Phosphor is a terminal slide deck presentation tool built on **ratatui**. Slides are authored in Markdown and rendered natively in the terminal — including charts, block diagrams, and raster images (via halfblock characters). A key differentiator is a **presenter notes system** that syncs notes to a separate terminal window via Unix domain socket.
+Phosphor is a terminal slide deck presentation tool built on **ratatui**. Slides are authored in Markdown and rendered natively in the terminal — including charts, block diagrams, 3D wireframe models (via braille characters), and raster images (via halfblock characters). Designed for use with **Ghostty** terminal emulator: supports auto-relaunch into Ghostty with custom config (shaders, font size) via `--ghostty-config` flag or front matter `ghostty:` field, and auto-launches a notes viewer in a separate Ghostty window. A companion GLSL shader (`phosphor.glsl`) adds CRT scanlines, bloom/phosphor glow, and glitch effects. Animation runs at ~120fps (8ms tick).
 
 ## Build & Development
 
@@ -47,7 +47,7 @@ Window rectangle stack pattern — `PushWindowRect` narrows the drawable area, `
 
 ### Presenter Notes Protocol
 
-Newline-delimited JSON over Unix domain socket (`src/notes/protocol.rs`). Messages: `SlideChanged { index, visible_chunks }` and `Quit`. Presenter is the server (`NotesServer`); notes viewer connects as client (`NotesClient`). Client uses a 50ms read timeout to avoid blocking the TUI event loop.
+Newline-delimited JSON over Unix domain socket (`src/notes/protocol.rs`). Messages: `SlideChanged { index, visible_chunks }`, `FontSize { size }`, and `Quit`. Presenter is the server (`NotesServer`); notes viewer connects as client (`NotesClient`). Client uses a 50ms read timeout to avoid blocking the TUI event loop. The presenter auto-launches the notes viewer in a new Ghostty window (120x10 chars) via a temp config file and shell script.
 
 ### Theming
 
@@ -65,16 +65,22 @@ Optional YAML front matter between `---` delimiters at document start:
 title: My Talk
 author: Name
 theme: path/to/theme.yaml
+ghostty: ~/.config/ghostty/my-talk
 ---
 ```
-Theme path is relative to the slide file's directory. CLI `--theme` flag overrides front matter.
+Theme path is relative to the slide file's directory. CLI `--theme` flag overrides front matter. `ghostty:` triggers auto-relaunch inside Ghostty with the specified config file (supports `~` expansion). `PHOSPHOR_IN_GHOSTTY` env var prevents infinite relaunch recursion.
 
 ### Content Types
 
 - **Charts** (`src/chart.rs`): Fenced code blocks with `chart` language. YAML spec (type, file, title, color) + CSV data. Bar charts use ratatui `BarChart`; line charts use `Chart` with `Dataset`. Height scales to 60% of available terminal height.
 - **Diagrams** (`src/diagram.rs`): Fenced code blocks with `diagram` language. `[Box] -> [Box]` DSL parsed into a directed graph. 3-phase layout (spine placement, feeder stacking, sibling proximity) rendered to box-drawing characters on a 2D grid. Output is `StyledText` lines fed through `RenderText` ops.
+- **Wireframes** (`src/wireframe.rs`): Fenced code blocks with `wireframe` language. 3D wireframe models rendered to braille characters (`src/braille.rs`). Currently implements a DiRAC-style sampling calorimeter (EM + HAD sections with per-cell sensor grids). Features: perspective projection, depth-based fade, Y/X axis rotation, continuous spin animation, and muon particle simulation with per-cell hit detection (individual sensor/scintillator cells flash white when a muon passes through their bounding box). Model geometry is cached in a `OnceLock<WireframeModel>` static for frame reuse.
 - **Images** (`src/halfblock.rs`): `![alt](path.png)` rendered using halfblock characters (▀ with fg=top pixel, bg=bottom pixel — 2 vertical pixels per cell). Uses the `image` crate for decode/resize. Images scale to fill available terminal space; no Kitty/Sixel protocol dependency.
 - **Word wrapping** (`src/render/lower.rs`): `wrap_styled_text()` preserves styled segments across line breaks. Applied to paragraphs, headings, lists (with hanging indent), and blockquotes.
+
+### Slide Transitions
+
+`src/transition.rs` — scramble/reveal animation between slides. The app captures the current frame buffer into a `Vec<Vec<Cell>>` grid, then the `Transition` struct progressively reveals cells from the new frame. Direction is `Forward` for text slides, `BottomUp` for visual slides (charts, diagrams, wireframes). Chunk reveals within a slide pass the before-frame for smooth incremental animation.
 
 ### Test Fire Mode
 
@@ -92,11 +98,14 @@ Theme path is relative to the slide file's directory. CLI `--theme` flag overrid
 | `elements` | `SlideElement` enum, `StyledText`, `TextSegment`, `SegmentStyle` |
 | `chart` | Chart spec types, CSV loading (bar and line data) |
 | `diagram` | Diagram DSL parser, graph layout, box-drawing renderer |
+| `wireframe` | 3D wireframe models, braille rendering, particle simulation, per-cell hit detection |
+| `braille` | Braille character canvas for sub-cell resolution drawing |
 | `halfblock` | Raster image → halfblock character lines |
 | `testfire` | Single-slide stdout renderer for debugging |
 | `theme` | YAML theme types, loader, palette color resolution |
 | `metadata` | YAML front matter extraction |
 | `notes` | Socket protocol, `NotesServer`, `NotesClient` |
+| `transition` | Slide transition animations (scramble/reveal) |
 | `input` | `Action` enum, key → action mapping |
 | `app` | Presenter TUI event loop |
 | `notes_app` | Notes viewer TUI event loop with elapsed timer |

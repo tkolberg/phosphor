@@ -7,6 +7,8 @@ pub struct LowerContext<'a> {
     pub window_width: u16,
     pub window_height: u16,
     pub theme: &'a Theme,
+    /// Number of currently visible chunks on this slide (for camera keyframe selection).
+    pub visible_chunks: usize,
 }
 
 pub trait Lower {
@@ -550,7 +552,9 @@ fn lower_wireframe(source: &str, ctx: &LowerContext) -> Vec<RenderOp> {
     let wf_rows = wf_rows.max(10);
     let wf_cols = ctx.window_width;
 
-    let lines = crate::wireframe::render_wireframe(&spec, wf_cols, wf_rows);
+    // Camera index is driven by visible_chunks: chunk 1 = camera 0, chunk 2 = camera 1, etc.
+    let camera_index = ctx.visible_chunks.saturating_sub(1);
+    let lines = crate::wireframe::render_wireframe(&spec, wf_cols, wf_rows, camera_index);
     let width = wf_cols;
 
     let mut ops = Vec::new();
@@ -588,6 +592,7 @@ mod tests {
             window_width: 80,
             window_height: 40,
             theme,
+            visible_chunks: 1,
         }
     }
 

@@ -1,6 +1,11 @@
+use std::sync::OnceLock;
+
 use ratatui::style::Color;
 
 use crate::braille::BrailleCanvas;
+
+/// Cached detector model — built once, reused every frame.
+static DETECTOR_MODEL: OnceLock<WireframeModel> = OnceLock::new();
 
 /// A point in 3D space.
 #[derive(Debug, Clone, Copy)]
@@ -318,8 +323,8 @@ pub fn render_wireframe(
     term_rows: u16,
 ) -> Vec<ratatui::text::Line<'static>> {
     let model = match spec.model.as_str() {
-        "detector" => build_detector(),
-        _ => build_detector(), // default
+        "detector" => DETECTOR_MODEL.get_or_init(build_detector),
+        _ => DETECTOR_MODEL.get_or_init(build_detector),
     };
 
     let mut canvas = BrailleCanvas::new(term_cols, term_rows);

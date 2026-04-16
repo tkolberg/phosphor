@@ -19,8 +19,8 @@ use crate::slide::Presentation;
 use crate::theme::Theme;
 use crate::transition::{Cell, Transition, TransitionDirection};
 
-/// Tick interval for animation frames (~33ms ≈ 30fps).
-const TICK_RATE: Duration = Duration::from_millis(33);
+/// Tick interval for animation frames (~8ms ≈ 120fps).
+const TICK_RATE: Duration = Duration::from_millis(8);
 
 pub struct App {
     presentation: Presentation,
@@ -496,3 +496,4 @@ fn extract_color(color: Color) -> Option<Color> {
         c => Some(c),
     }
 }
+

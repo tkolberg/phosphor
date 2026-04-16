@@ -152,7 +152,7 @@ fn run_presenter(
         None
     };
 
-    // Auto-launch the notes viewer in a new Ghostty window via a temp launcher script
+    // Auto-launch the notes viewer in a new Ghostty window
     let exe = std::env::current_exe().unwrap_or_default();
     let file_abs = std::fs::canonicalize(&cli.file).unwrap_or_else(|_| cli.file.clone());
     let launcher_path = std::env::temp_dir().join("phosphor-notes-launch.sh");
@@ -171,11 +171,18 @@ fn run_presenter(
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&launcher_path, std::fs::Permissions::from_mode(0o755)).ok();
     }
+    let notes_config_path = std::env::temp_dir().join("phosphor-notes.conf");
+    std::fs::write(
+        &notes_config_path,
+        format!(
+            "window-width = 120\nwindow-height = 10\ncommand = {}\n",
+            launcher_path.display(),
+        ),
+    )
+    .ok();
     let _ = std::process::Command::new("open")
         .args(["-na", "Ghostty.app", "--args"])
-        .arg("--window-width=120")
-        .arg("--window-height=10")
-        .arg(format!("--command={}", launcher_path.display()))
+        .arg(format!("--config-file={}", notes_config_path.display()))
         .spawn();
 
     // Set up terminal
@@ -270,10 +277,10 @@ fn launch_in_ghostty(cli: &Cli, ghostty_config: &std::path::Path) -> Result<()> 
         .arg(format!("--config-file={}", config_abs.display()))
         .arg(format!("--command={}", shell_cmd))
         .status()
-        .wrap_err("Failed to launch Ghostty")?;
+        .wrap_err("Failed to launch Ghostty window")?;
 
     if !status.success() {
-        return Err(color_eyre::eyre::eyre!("Ghostty launch failed"));
+        return Err(color_eyre::eyre::eyre!("Ghostty window launch failed"));
     }
 
     eprintln!("Launched Ghostty with config: {}", config_abs.display());

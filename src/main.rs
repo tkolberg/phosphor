@@ -1,4 +1,5 @@
 mod app;
+mod braille;
 mod chart;
 mod cli;
 mod diagram;
@@ -53,6 +54,26 @@ fn main() -> Result<()> {
 
     // Extract front matter before parsing
     let (front_matter, markdown) = metadata::extract_front_matter(&content);
+
+    // Ghostty relaunch: CLI flag > front matter > skip.
+    // PHOSPHOR_IN_GHOSTTY env var prevents infinite recursion.
+    if std::env::var("PHOSPHOR_IN_GHOSTTY").is_err() {
+        let base_dir = cli
+            .file
+            .parent()
+            .unwrap_or(std::path::Path::new("."));
+
+        let ghostty_config = cli.ghostty_config.clone().or_else(|| {
+            front_matter
+                .as_ref()
+                .and_then(|fm| fm.ghostty.as_ref())
+                .map(|g| expand_tilde(g))
+        });
+
+        if let Some(ref config) = ghostty_config {
+            return launch_in_ghostty(&cli, config);
+        }
+    }
 
     let base_dir = cli
         .file
@@ -166,5 +187,54 @@ fn run_notes_viewer(
     let mut app = NotesApp::new(presentation, client);
     app.run(&mut terminal)?;
 
+    Ok(())
+}
+
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn expand_tilde(path: &str) -> std::path::PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return std::path::PathBuf::from(home).join(rest);
+        }
+    }
+    std::path::PathBuf::from(path)
+}
+
+fn launch_in_ghostty(cli: &Cli, ghostty_config: &std::path::Path) -> Result<()> {
+    let exe = std::env::current_exe().wrap_err("Failed to find phosphor executable")?;
+    let file = std::fs::canonicalize(&cli.file)
+        .wrap_err_with(|| format!("Failed to resolve {:?}", cli.file))?;
+
+    let mut cmd = format!(
+        "PHOSPHOR_IN_GHOSTTY=1 '{}' '{}'",
+        exe.display(),
+        file.display()
+    );
+    if let Some(ref theme) = cli.theme {
+        let theme_abs = std::fs::canonicalize(theme).unwrap_or_else(|_| theme.clone());
+        cmd.push_str(&format!(" --theme '{}'", theme_abs.display()));
+    }
+
+    let config_abs = std::fs::canonicalize(ghostty_config)
+        .wrap_err_with(|| format!("Failed to resolve Ghostty config {:?}", ghostty_config))?;
+
+    let shell_cmd = format!("/bin/zsh -c {}", shell_escape(&cmd));
+
+    let status = std::process::Command::new("open")
+        .args(["-na", "Ghostty.app", "--args"])
+        .arg(format!("--config-file={}", config_abs.display()))
+        .arg("--window-decoration=false")
+        .arg(format!("--command={}", shell_cmd))
+        .status()
+        .wrap_err("Failed to launch Ghostty")?;
+
+    if !status.success() {
+        return Err(color_eyre::eyre::eyre!("Ghostty launch failed"));
+    }
+
+    eprintln!("Launched Ghostty with config: {}", config_abs.display());
     Ok(())
 }

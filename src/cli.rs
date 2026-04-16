@@ -11,6 +11,10 @@ pub struct Cli {
     #[arg(long)]
     pub theme: Option<PathBuf>,
 
+    /// Launch in a new Ghostty window with a custom config (e.g. shader bundle)
+    #[arg(long)]
+    pub ghostty_config: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }

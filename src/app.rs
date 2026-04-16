@@ -345,7 +345,11 @@ impl App {
         }
     }
 
-    fn start_transition(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) {
+    fn start_transition(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+        prev_frame: Option<Vec<Vec<Cell>>>,
+    ) {
         let grid = self.capture_frame(terminal);
         let area = terminal.get_frame().area();
         let width = area.width as usize;
@@ -355,7 +359,7 @@ impl App {
         } else {
             TransitionDirection::Forward
         };
-        self.transition = Some(Transition::new(grid, width, height, direction));
+        self.transition = Some(Transition::new(grid, width, height, direction, prev_frame));
     }
 
     fn handle_action(
@@ -366,6 +370,19 @@ impl App {
         let total = self.presentation.slides.len();
         let prev_slide = self.current_slide;
         let prev_chunks = self.visible_chunks;
+
+        // Capture before-frame for chunk reveals (same slide, adding content)
+        let before_frame = match action {
+            Action::NextSlide
+                if self.visible_chunks < self.current_slide_chunk_count() =>
+            {
+                Some(self.capture_frame(terminal))
+            }
+            Action::PrevSlide if self.visible_chunks > 1 => {
+                Some(self.capture_frame(terminal))
+            }
+            _ => None,
+        };
 
         match action {
             Action::NextSlide => {
@@ -401,7 +418,13 @@ impl App {
         // If content changed, start a transition
         let changed = self.current_slide != prev_slide || self.visible_chunks != prev_chunks;
         if changed && !self.should_quit {
-            self.start_transition(terminal);
+            // Pass before-frame only for same-slide chunk changes
+            let prev = if self.current_slide == prev_slide {
+                before_frame
+            } else {
+                None
+            };
+            self.start_transition(terminal, prev);
         }
 
         self.broadcast_notes();

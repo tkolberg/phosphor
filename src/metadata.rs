@@ -5,6 +5,7 @@ pub struct FrontMatter {
     pub title: Option<String>,
     pub author: Option<String>,
     pub theme: Option<String>,
+    pub ghostty: Option<String>,
 }
 
 /// Extract YAML front matter from the beginning of a markdown document.

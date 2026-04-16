@@ -89,14 +89,29 @@ impl Transition {
         width: usize,
         height: usize,
         direction: TransitionDirection,
+        prev_frame: Option<Vec<Vec<Cell>>>,
     ) -> Self {
         let now = Instant::now();
         let mut rng = rand::rng();
 
+        // Determine which cells are new (need animation) vs unchanged (settle instantly)
+        let is_new = |y: usize, x: usize| -> bool {
+            if let Some(ref prev) = prev_frame {
+                if y < prev.len() && x < prev[y].len() {
+                    let old = &prev[y][x];
+                    let new = &target[y][x];
+                    // Cell changed if character or colors differ
+                    return old.ch != new.ch || old.fg != new.fg || old.bg != new.bg;
+                }
+            }
+            true // no previous frame means everything is new
+        };
+
         let total_chars: usize = target
             .iter()
-            .flat_map(|row| row.iter())
-            .filter(|c| c.ch != ' ')
+            .enumerate()
+            .flat_map(|(y, row)| row.iter().enumerate().map(move |(x, c)| (y, x, c)))
+            .filter(|(y, x, c)| c.ch != ' ' && is_new(*y, *x))
             .count();
 
         let mut settle_at = vec![vec![Duration::ZERO; width]; height];
@@ -107,7 +122,11 @@ impl Transition {
                 // Left-to-right, top-to-bottom
                 for y in 0..height {
                     for x in 0..width {
-                        if y < target.len() && x < target[y].len() && target[y][x].ch != ' ' {
+                        if y < target.len()
+                            && x < target[y].len()
+                            && target[y][x].ch != ' '
+                            && is_new(y, x)
+                        {
                             let progress = if total_chars > 1 {
                                 char_index as f64 / (total_chars - 1) as f64
                             } else {
@@ -123,7 +142,11 @@ impl Transition {
                 // Bottom-to-top, left-to-right
                 for y in (0..height).rev() {
                     for x in 0..width {
-                        if y < target.len() && x < target[y].len() && target[y][x].ch != ' ' {
+                        if y < target.len()
+                            && x < target[y].len()
+                            && target[y][x].ch != ' '
+                            && is_new(y, x)
+                        {
                             let progress = if total_chars > 1 {
                                 char_index as f64 / (total_chars - 1) as f64
                             } else {

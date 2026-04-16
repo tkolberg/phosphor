@@ -1,6 +1,0 @@
-label,value
-ResNet-50,94.2
-VGG-16,91.8
-MobileNet,89.5
-EfficientNet,95.1
-DenseNet,93.7

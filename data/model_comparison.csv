@@ -1,0 +1,11 @@
+label,value
+ResNet-50,94.2
+VGG-16,91.8
+MobileNetV3,89.5
+EfficientNet-B4,95.1
+DenseNet-121,93.7
+ViT-Base,96.3
+ConvNeXt,95.8
+Swin-T,95.4
+RegNetY,93.1
+InceptionV3,92.4

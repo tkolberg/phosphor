@@ -1,0 +1,54 @@
+palette:
+  bg: "#09090b"
+  fg: "#c8c8d0"
+  heading: "#a78bfa"
+  accent: "#f472b6"
+  code_bg: "#111114"
+  muted: "#3f3f50"
+  violet: "#a78bfa"
+  rose: "#f472b6"
+  teal: "#2dd4bf"
+  amber: "#fbbf24"
+
+slide:
+  bg: "palette:bg"
+  fg: "palette:fg"
+  margin:
+    left: 4
+    right: 4
+    top: 2
+    bottom: 1
+
+styles:
+  heading:
+    fg: "palette:violet"
+    bold: true
+  code:
+    fg: "palette:teal"
+    bg: "palette:code_bg"
+    padding: 2
+  blockquote:
+    fg: "palette:rose"
+    italic: true
+
+highlights:
+  key:
+    fg: "palette:amber"
+    bold: true
+  jargon:
+    fg: "palette:violet"
+    italic: true
+  definition:
+    fg: "palette:teal"
+  emphasis:
+    fg: "palette:rose"
+    bold: true
+  warning:
+    fg: "#ef4444"
+    bold: true
+  quote:
+    fg: "palette:rose"
+    italic: true
+
+footer:
+  fg: "palette:muted"

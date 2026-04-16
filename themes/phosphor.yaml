@@ -1,0 +1,31 @@
+palette:
+  bg: "#0a0a0a"
+  fg: "#33ff33"
+  heading: "#55ff55"
+  accent: "#00cc00"
+  code_bg: "#0d1a0d"
+  muted: "#1a7a1a"
+
+slide:
+  bg: "palette:bg"
+  fg: "palette:fg"
+  margin:
+    left: 4
+    right: 4
+    top: 2
+    bottom: 1
+
+styles:
+  heading:
+    fg: "palette:heading"
+    bold: true
+  code:
+    fg: "palette:fg"
+    bg: "palette:code_bg"
+    padding: 2
+  blockquote:
+    fg: "palette:accent"
+    italic: true
+
+footer:
+  fg: "palette:muted"

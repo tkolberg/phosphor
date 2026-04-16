@@ -1,0 +1,7 @@
+label,value
+eval_v2 Baseline,465
+eval_v2 Pipeline,289
+g4_v2 Baseline,973
+g4_v2 Pipeline,518
+single_tower Baseline,473
+single_tower Pipeline,294

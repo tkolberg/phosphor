@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use crate::chart::ChartSpec;
+use crate::histogram::HistogramSpec;
+use crate::plot::PlotSpec;
 
 #[derive(Debug, Clone, Serialize)]
 pub enum SlideElement {
@@ -47,6 +49,24 @@ pub enum SlideElement {
     },
     Wireframe {
         source: String,
+        base_dir: PathBuf,
+    },
+    Histogram {
+        #[serde(skip)]
+        spec: HistogramSpec,
+        #[serde(skip)]
+        base_dir: PathBuf,
+    },
+    Plot {
+        #[serde(skip)]
+        spec: PlotSpec,
+        #[serde(skip)]
+        base_dir: PathBuf,
+    },
+    Photo {
+        path: String,
+        #[serde(skip)]
+        base_dir: PathBuf,
     },
     HorizontalRule,
     Spacer,

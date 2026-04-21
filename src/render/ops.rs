@@ -36,6 +36,10 @@ pub enum RenderOp {
         lines: Vec<ratatui::text::Line<'static>>,
         width: u16,
     },
+    /// Full-bleed photo background (fills entire frame area)
+    RenderPhotoBackground {
+        lines: Vec<ratatui::text::Line<'static>>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default)]

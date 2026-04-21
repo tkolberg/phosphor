@@ -21,6 +21,7 @@ pub fn parse_presentation(markdown: &str, base_dir: &Path) -> Presentation {
     let mut slides: Vec<Slide> = Vec::new();
     let mut current_elements: Vec<SlideElement> = Vec::new();
     let mut current_notes: Option<String> = None;
+    let mut current_center = false;
 
     for node in root.children() {
         let ast = node.data.borrow();
@@ -30,11 +31,14 @@ pub fn parse_presentation(markdown: &str, base_dir: &Path) -> Presentation {
                 slides.push(build_slide(
                     std::mem::take(&mut current_elements),
                     current_notes.take(),
+                    std::mem::take(&mut current_center),
                 ));
             }
             NodeValue::HtmlBlock(html) => {
                 if is_chunk_marker(&html.literal) {
                     current_elements.push(SlideElement::ChunkBreak);
+                } else if is_center_marker(&html.literal) {
+                    current_center = true;
                 } else if let Some(notes) = extract_notes(&html.literal) {
                     current_notes = Some(notes);
                 }
@@ -49,7 +53,7 @@ pub fn parse_presentation(markdown: &str, base_dir: &Path) -> Presentation {
 
     // Don't forget the last slide
     if !current_elements.is_empty() {
-        slides.push(build_slide(current_elements, current_notes.take()));
+        slides.push(build_slide(current_elements, current_notes.take(), current_center));
     }
 
     let title = extract_title(&slides);
@@ -60,7 +64,7 @@ pub fn parse_presentation(markdown: &str, base_dir: &Path) -> Presentation {
     }
 }
 
-fn build_slide(elements: Vec<SlideElement>, notes: Option<String>) -> Slide {
+fn build_slide(elements: Vec<SlideElement>, notes: Option<String>, center: bool) -> Slide {
     // Split elements into chunks on ChunkBreak markers.
     // A ChunkBreak always starts a new chunk (even if empty), so that
     // camera-only advances on wireframe slides work without dummy content.
@@ -90,12 +94,17 @@ fn build_slide(elements: Vec<SlideElement>, notes: Option<String>) -> Slide {
         });
     }
 
-    Slide { chunks, notes }
+    Slide { chunks, notes, center }
 }
 
 fn is_chunk_marker(html: &str) -> bool {
     let trimmed = html.trim();
     trimmed == "<!-- chunk -->"
+}
+
+fn is_center_marker(html: &str) -> bool {
+    let trimmed = html.trim();
+    trimmed == "<!-- center -->"
 }
 
 fn extract_title(slides: &[Slide]) -> Option<String> {
@@ -167,7 +176,39 @@ fn convert_node<'a>(node: &'a AstNode<'a>, base_dir: &Path) -> Option<SlideEleme
                 "wireframe" => {
                     Some(SlideElement::Wireframe {
                         source: code_block.literal.trim_end().to_string(),
+                        base_dir: base_dir.to_path_buf(),
                     })
+                }
+                "photo" => {
+                    let path = code_block.literal.trim().to_string();
+                    Some(SlideElement::Photo {
+                        path,
+                        base_dir: base_dir.to_path_buf(),
+                    })
+                }
+                "histogram" => {
+                    match crate::histogram::parse_histogram_spec(&code_block.literal) {
+                        Some(spec) => Some(SlideElement::Histogram {
+                            spec,
+                            base_dir: base_dir.to_path_buf(),
+                        }),
+                        None => Some(SlideElement::Code {
+                            language: Some("histogram".to_string()),
+                            code: code_block.literal.trim_end().to_string(),
+                        }),
+                    }
+                }
+                "plot" => {
+                    match crate::plot::parse_plot_spec(&code_block.literal) {
+                        Some(spec) => Some(SlideElement::Plot {
+                            spec,
+                            base_dir: base_dir.to_path_buf(),
+                        }),
+                        None => Some(SlideElement::Code {
+                            language: Some("plot".to_string()),
+                            code: code_block.literal.trim_end().to_string(),
+                        }),
+                    }
                 }
                 _ => {
                     let language = if code_block.info.is_empty() {
@@ -388,7 +429,18 @@ fn expand_highlights(element: SlideElement) -> SlideElement {
             ordered,
             start,
         },
-        // Table cells, code, chart, diagram — no highlight expansion needed
+        SlideElement::Table {
+            headers,
+            rows,
+            alignments,
+        } => SlideElement::Table {
+            headers: headers.into_iter().map(expand_highlights_in_text).collect(),
+            rows: rows
+                .into_iter()
+                .map(|row| row.into_iter().map(expand_highlights_in_text).collect())
+                .collect(),
+            alignments,
+        },
         other => other,
     }
 }

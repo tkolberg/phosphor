@@ -41,7 +41,10 @@ impl Lower for SlideElement {
                 base_dir,
             } => lower_image(path, alt, base_dir, ctx),
             SlideElement::Diagram { source } => lower_diagram(source, ctx),
-            SlideElement::Wireframe { source } => lower_wireframe(source, ctx),
+            SlideElement::Wireframe { source, base_dir } => lower_wireframe(source, base_dir, ctx),
+            SlideElement::Histogram { spec, base_dir } => lower_histogram(spec, base_dir, ctx),
+            SlideElement::Plot { spec, base_dir } => lower_plot(spec, base_dir, ctx),
+            SlideElement::Photo { path, base_dir } => lower_photo(path, base_dir, ctx),
             SlideElement::Spacer => vec![RenderOp::Spacer { lines: 1 }],
             SlideElement::ChunkBreak => vec![], // should never reach here
         }
@@ -411,18 +414,34 @@ fn lower_table(
         }
     }
 
-    let format_cell = |text: &StyledText, col: usize| -> String {
-        let content: String = text.segments.iter().map(|s| s.text.as_str()).collect();
+    let format_cell = |text: &StyledText, col: usize| -> StyledText {
+        let content_len: usize = text.segments.iter().map(|s| s.text.chars().count()).sum();
         let w = col_widths[col];
+        let pad_total = w.saturating_sub(content_len);
         let align = alignments.get(col).copied().unwrap_or(TableAlignment::None);
-        match align {
-            TableAlignment::Center => format!(" {:^w$} ", content, w = w),
-            TableAlignment::Right => format!(" {:>w$} ", content, w = w),
-            _ => format!(" {:<w$} ", content, w = w),
-        }
+        let (pad_left, pad_right) = match align {
+            TableAlignment::Center => (pad_total / 2, pad_total - pad_total / 2),
+            TableAlignment::Right => (pad_total, 0),
+            _ => (0, pad_total),
+        };
+
+        let mut segments = Vec::new();
+        // Leading space + alignment padding
+        segments.push(TextSegment {
+            text: " ".repeat(1 + pad_left),
+            style: SegmentStyle::default(),
+        });
+        // Actual cell content with styles preserved
+        segments.extend(text.segments.iter().cloned());
+        // Trailing alignment padding + space
+        segments.push(TextSegment {
+            text: " ".repeat(pad_right + 1),
+            style: SegmentStyle::default(),
+        });
+        StyledText { segments }
     };
 
-    let separator = |left: char, mid: char, right: char, fill: char| -> String {
+    let separator = |left: char, mid: char, right: char, fill: char| -> StyledText {
         let mut s = String::new();
         s.push(left);
         for (i, w) in col_widths.iter().enumerate() {
@@ -435,55 +454,60 @@ fn lower_table(
             }
         }
         s.push(right);
-        s
+        StyledText::plain(s)
     };
 
-    let build_row = |cells: &[StyledText]| -> String {
-        let mut s = String::new();
-        s.push('│');
+    let build_row = |cells: &[StyledText]| -> StyledText {
+        let mut segments = Vec::new();
+        segments.push(TextSegment {
+            text: "│".to_string(),
+            style: SegmentStyle::default(),
+        });
         for i in 0..num_cols {
             let empty = StyledText::plain("");
             let cell = cells.get(i).unwrap_or(&empty);
-            s.push_str(&format_cell(cell, i));
+            let formatted = format_cell(cell, i);
+            segments.extend(formatted.segments);
             if i + 1 < num_cols {
-                s.push('│');
+                segments.push(TextSegment {
+                    text: "│".to_string(),
+                    style: SegmentStyle::default(),
+                });
             }
         }
-        s.push('│');
-        s
+        segments.push(TextSegment {
+            text: "│".to_string(),
+            style: SegmentStyle::default(),
+        });
+        StyledText { segments }
     };
 
     let mut ops = Vec::new();
 
-    // Top border
     ops.push(RenderOp::RenderText {
-        line: StyledText::plain(separator('┌', '┬', '┐', '─')),
+        line: separator('┌', '┬', '┐', '─'),
         alignment: Alignment::Left,
     });
 
-    // Header row
     ops.push(RenderOp::RenderText {
-        line: StyledText::plain(build_row(headers)),
+        line: build_row(headers),
         alignment: Alignment::Left,
     });
 
-    // Header/body separator
     ops.push(RenderOp::RenderText {
-        line: StyledText::plain(separator('├', '┼', '┤', '─')),
+        line: separator('├', '┼', '┤', '─'),
         alignment: Alignment::Left,
     });
 
-    // Body rows
     for row in rows {
         ops.push(RenderOp::RenderText {
-            line: StyledText::plain(build_row(row)),
+            line: build_row(row),
             alignment: Alignment::Left,
         });
     }
 
-    // Bottom border
     ops.push(RenderOp::RenderText {
-        line: StyledText::plain(separator('└', '┴', '┘', '─')),
+        line: separator('└', '┴', '┘', '─'),
         alignment: Alignment::Left,
     });
 
@@ -545,8 +569,8 @@ fn lower_image(
     }
 }
 
-fn lower_wireframe(source: &str, ctx: &LowerContext) -> Vec<RenderOp> {
-    let spec = crate::wireframe::parse_wireframe_spec(source);
+fn lower_wireframe(source: &str, base_dir: &std::path::Path, ctx: &LowerContext) -> Vec<RenderOp> {
+    let spec = crate::wireframe::parse_wireframe_spec(source, base_dir);
     // Use ~90% of available height for the wireframe
     let wf_rows = ((ctx.window_height as f32) * 0.9) as u16;
     let wf_rows = wf_rows.max(10);
@@ -567,8 +591,7 @@ fn lower_wireframe(source: &str, ctx: &LowerContext) -> Vec<RenderOp> {
 }
 
 fn lower_diagram(source: &str, ctx: &LowerContext) -> Vec<RenderOp> {
-    // Delegate to the diagram module for parsing, layout, and text rendering
-    let lines = crate::diagram::render_diagram(source, ctx.window_width);
+    let lines = crate::diagram::render_diagram(source, ctx.window_width, ctx.visible_chunks.saturating_sub(1));
     let mut ops = Vec::new();
     for line in lines {
         ops.push(RenderOp::RenderText {
@@ -578,6 +601,53 @@ fn lower_diagram(source: &str, ctx: &LowerContext) -> Vec<RenderOp> {
     }
     ops.push(RenderOp::Spacer { lines: 1 });
     ops
+}
+
+fn lower_histogram(
+    spec: &crate::histogram::HistogramSpec,
+    base_dir: &std::path::Path,
+    ctx: &LowerContext,
+) -> Vec<RenderOp> {
+    let hist_rows = (ctx.window_height as f64 * 0.7) as u16;
+    let lines = crate::histogram::render_histogram(spec, base_dir, ctx.window_width, hist_rows);
+    let width = ctx.window_width;
+
+    let mut ops = Vec::new();
+    ops.push(RenderOp::RenderImage { lines, width });
+    ops.push(RenderOp::Spacer { lines: 1 });
+    ops
+}
+
+fn lower_plot(
+    spec: &crate::plot::PlotSpec,
+    base_dir: &std::path::Path,
+    ctx: &LowerContext,
+) -> Vec<RenderOp> {
+    let plot_rows = (ctx.window_height as f64 * 0.85) as u16;
+    let lines = crate::plot::render_plot(spec, base_dir, ctx.window_width, plot_rows);
+    let width = ctx.window_width;
+
+    let mut ops = Vec::new();
+    ops.push(RenderOp::RenderImage { lines, width });
+    ops.push(RenderOp::Spacer { lines: 1 });
+    ops
+}
+
+fn lower_photo(
+    path: &str,
+    base_dir: &std::path::Path,
+    ctx: &LowerContext,
+) -> Vec<RenderOp> {
+    let image_path = base_dir.join(path);
+    match crate::halfblock::image_to_halfblock_lines_fill(&image_path, ctx.window_width, ctx.window_height) {
+        Ok(lines) => vec![RenderOp::RenderPhotoBackground { lines }],
+        Err(_) => vec![
+            RenderOp::RenderText {
+                line: StyledText::plain(format!("[Photo error: {}]", path)),
+                alignment: Alignment::Center,
+            },
+        ],
+    }
 }
 
 #[cfg(test)]

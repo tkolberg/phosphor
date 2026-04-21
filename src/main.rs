@@ -5,11 +5,13 @@ mod cli;
 mod diagram;
 mod elements;
 mod halfblock;
+mod histogram;
 mod input;
 mod metadata;
 mod notes;
 mod notes_app;
 mod parse;
+mod plot;
 mod render;
 mod slide;
 mod testfire;
@@ -56,9 +58,9 @@ fn main() -> Result<()> {
     // Extract front matter before parsing
     let (front_matter, markdown) = metadata::extract_front_matter(&content);
 
-    // Ghostty relaunch: CLI flag > front matter > skip.
-    // PHOSPHOR_IN_GHOSTTY prevents infinite recursion (set by the relaunched instance).
-    if std::env::var("PHOSPHOR_IN_GHOSTTY").is_err() {
+    // Ghostty relaunch: only for the presenter (no subcommand).
+    // Skip for test/notes subcommands, and when already relaunched (PHOSPHOR_IN_GHOSTTY).
+    if cli.command.is_none() && std::env::var("PHOSPHOR_IN_GHOSTTY").is_err() {
         let ghostty_config = cli.ghostty_config.clone().or_else(|| {
             front_matter
                 .as_ref()
@@ -182,6 +184,7 @@ fn run_presenter(
         let ghostty_bin = "/Applications/Ghostty.app/Contents/MacOS/ghostty";
         let _ = std::process::Command::new(ghostty_bin)
             .arg(format!("--config-file={}", notes_config_path.display()))
+            .arg("--title=☢ phosphor notes")
             .spawn();
     } else {
         let _ = std::process::Command::new("open")
@@ -284,6 +287,7 @@ fn launch_in_ghostty(cli: &Cli, ghostty_config: &std::path::Path, already_in_gho
         std::process::Command::new(&ghostty_bin)
             .arg(format!("--config-file={}", config_abs.display()))
             .arg(format!("--command={}", shell_cmd))
+            .arg("--title=☢ phosphor")
             .spawn()
             .wrap_err("Failed to launch Ghostty window")?;
         // The ghostty CLI spawns asynchronously; the original terminal returns immediately.

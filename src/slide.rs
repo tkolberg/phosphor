@@ -15,6 +15,7 @@ pub struct PresentationMetadata {
 pub struct Slide {
     pub chunks: Vec<SlideChunk>,
     pub notes: Option<String>,
+    pub center: bool,
 }
 
 #[derive(Debug)]

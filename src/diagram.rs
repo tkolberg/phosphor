@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::elements::StyledText;
+use crate::elements::{SegmentStyle, StyledText, TextSegment};
 
 #[derive(Debug)]
 struct Node {
@@ -17,18 +17,38 @@ struct Edge {
 struct Diagram {
     nodes: Vec<Node>,
     edges: Vec<Edge>,
+    /// Maps chunk index (1-based) to set of node labels to highlight.
+    highlights: HashMap<usize, Vec<String>>,
 }
 
 /// Parse the DSL into a diagram structure.
 /// Format: `[Box A] -> [Box B] -> [Box C]` per line.
+/// Highlight lines: `highlight: 1 Box A, Box B` (chunk 1 highlights those boxes).
 fn parse_diagram(input: &str) -> Diagram {
     let mut nodes: Vec<Node> = Vec::new();
     let mut node_map: HashMap<String, usize> = HashMap::new();
     let mut edges: Vec<Edge> = Vec::new();
+    let mut highlights: HashMap<usize, Vec<String>> = HashMap::new();
 
     for line in input.lines() {
         let line = line.trim();
         if line.is_empty() {
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("highlight:") {
+            let rest = rest.trim();
+            // Format: "N label1, label2, ..."
+            if let Some(space_idx) = rest.find(|c: char| c == ' ' || c == '\t') {
+                if let Ok(chunk) = rest[..space_idx].parse::<usize>() {
+                    let labels: Vec<String> = rest[space_idx + 1..]
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    highlights.insert(chunk, labels);
+                }
+            }
             continue;
         }
 
@@ -63,7 +83,7 @@ fn parse_diagram(input: &str) -> Diagram {
         }
     }
 
-    Diagram { nodes, edges }
+    Diagram { nodes, edges, highlights }
 }
 
 fn extract_bracket_label(s: &str) -> Option<String> {
@@ -268,7 +288,8 @@ fn layout_diagram(diagram: &Diagram, available_width: u16) -> Layout {
 
 /// Render a diagram to styled text lines using box-drawing characters.
 /// Uses a 2D character grid so all edges (same-row, cross-row, converging) render correctly.
-pub fn render_diagram(input: &str, available_width: u16) -> Vec<StyledText> {
+/// `visible_chunks` drives which boxes are highlighted (0 = no highlights).
+pub fn render_diagram(input: &str, available_width: u16, visible_chunks: usize) -> Vec<StyledText> {
     let diagram = parse_diagram(input);
     if diagram.nodes.is_empty() {
         return vec![StyledText::plain("[empty diagram]")];
@@ -277,13 +298,26 @@ pub fn render_diagram(input: &str, available_width: u16) -> Vec<StyledText> {
     let layout = layout_diagram(&diagram, available_width);
     let width = available_width as usize;
 
+    // Compute which nodes are highlighted at the current chunk level.
+    // Highlights are cumulative: chunk 2 includes chunk 1's highlights too.
+    // When no highlights are active yet (visible_chunks=0), all boxes render normally.
+    let highlighted_labels: HashSet<&str> = diagram.highlights
+        .iter()
+        .filter(|(chunk, _)| **chunk <= visible_chunks)
+        .flat_map(|(_, labels)| labels.iter().map(|s| s.as_str()))
+        .collect();
+    let has_active_highlights = !highlighted_labels.is_empty();
+
     // Each row occupies 3 lines (top, mid, bot) + 2 connector lines between rows
     let row_height = 3usize;
     let gap_height = 2usize;
     let total_height = layout.num_rows * row_height + layout.num_rows.saturating_sub(1) * gap_height;
 
-    // Build a 2D character grid
+    // Build a 2D character grid + per-cell highlight class
     let mut grid: Vec<Vec<char>> = vec![vec![' '; width]; total_height];
+    // Track which cells belong to a highlighted or dimmed node
+    // None = default (connectors, etc.), Some(true) = highlighted, Some(false) = dimmed
+    let mut cell_highlight: Vec<Vec<Option<bool>>> = vec![vec![None; width]; total_height];
 
     // Helper: get the y-offset for the start of a row's box lines
     let row_y = |row: usize| -> usize {
@@ -306,32 +340,45 @@ pub fn render_diagram(input: &str, available_width: u16) -> Vec<StyledText> {
         let inner_w = nl.box_width - 2;
 
         if nl.x + nl.box_width > width || y + 2 >= total_height {
-            continue; // skip if out of bounds
+            continue;
         }
+
+        // Determine highlight state for this node
+        let hl_state = if has_active_highlights {
+            Some(highlighted_labels.contains(label.as_str()))
+        } else {
+            None // no highlights defined at all — everything normal
+        };
+
+        // Helper to tag a cell
+        let mut set = |y: usize, x: usize, ch: char| {
+            if y < total_height && x < width {
+                grid[y][x] = ch;
+                cell_highlight[y][x] = hl_state;
+            }
+        };
 
         // Top: ┌───┐
-        grid[y][nl.x] = '┌';
+        set(y, nl.x, '┌');
         for j in 1..=inner_w {
-            grid[y][nl.x + j] = '─';
+            set(y, nl.x + j, '─');
         }
-        grid[y][nl.x + nl.box_width - 1] = '┐';
+        set(y, nl.x + nl.box_width - 1, '┐');
 
         // Mid: │ Label │
-        grid[y + 1][nl.x] = '│';
+        set(y + 1, nl.x, '│');
         let padded = format!("{:^width$}", label, width = inner_w);
         for (j, ch) in padded.chars().enumerate() {
-            if nl.x + 1 + j < width {
-                grid[y + 1][nl.x + 1 + j] = ch;
-            }
+            set(y + 1, nl.x + 1 + j, ch);
         }
-        grid[y + 1][nl.x + nl.box_width - 1] = '│';
+        set(y + 1, nl.x + nl.box_width - 1, '│');
 
         // Bot: └───┘
-        grid[y + 2][nl.x] = '└';
+        set(y + 2, nl.x, '└');
         for j in 1..=inner_w {
-            grid[y + 2][nl.x + j] = '─';
+            set(y + 2, nl.x + j, '─');
         }
-        grid[y + 2][nl.x + nl.box_width - 1] = '┘';
+        set(y + 2, nl.x + nl.box_width - 1, '┘');
     }
 
     // Phase 2: Draw all edges
@@ -445,13 +492,63 @@ pub fn render_diagram(input: &str, available_width: u16) -> Vec<StyledText> {
         }
     }
 
-    // Convert grid to StyledText lines, trimming trailing spaces
+    // Convert grid to StyledText lines with highlight styling
     grid.iter()
-        .map(|row| {
-            let s: String = row.iter().collect::<String>().trim_end().to_string();
-            StyledText::plain(s)
+        .enumerate()
+        .map(|(y, row)| {
+            let trimmed_len = row.iter().rposition(|&c| c != ' ').map(|p| p + 1).unwrap_or(0);
+            if trimmed_len == 0 {
+                return StyledText::plain("");
+            }
+
+            // Build segments by grouping consecutive chars with the same highlight state
+            let mut segments: Vec<TextSegment> = Vec::new();
+            let mut current_text = String::new();
+            let mut current_hl: Option<bool> = cell_highlight[y][0];
+
+            for x in 0..trimmed_len {
+                let hl = cell_highlight[y][x];
+                if hl != current_hl {
+                    if !current_text.is_empty() {
+                        segments.push(make_diagram_segment(&current_text, current_hl));
+                        current_text.clear();
+                    }
+                    current_hl = hl;
+                }
+                current_text.push(row[x]);
+            }
+            if !current_text.is_empty() {
+                segments.push(make_diagram_segment(&current_text, current_hl));
+            }
+
+            StyledText { segments }
         })
         .collect()
+}
+
+/// Create a text segment with appropriate highlight styling for diagram cells.
+fn make_diagram_segment(text: &str, highlight: Option<bool>) -> TextSegment {
+    match highlight {
+        Some(true) => TextSegment {
+            text: text.to_string(),
+            style: SegmentStyle {
+                bold: true,
+                highlight: Some("key".to_string()),
+                ..SegmentStyle::default()
+            },
+        },
+        Some(false) => TextSegment {
+            text: text.to_string(),
+            style: SegmentStyle {
+                highlight: Some("dim".to_string()),
+                ..SegmentStyle::default()
+            },
+        },
+        None => TextSegment {
+            text: text.to_string(),
+            style: SegmentStyle::default(),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -518,7 +615,7 @@ mod tests {
     #[test]
     fn test_render_produces_lines() {
         let input = "[Input] -> [Process] -> [Output]";
-        let lines = render_diagram(input, 80);
+        let lines = render_diagram(input, 80, 1);
         assert!(!lines.is_empty());
         assert!(lines.len() >= 3);
     }
@@ -526,7 +623,7 @@ mod tests {
     #[test]
     fn test_render_fits_width() {
         let input = "[Raw Data] -> [Preprocessing] -> [Feature Eng.] -> [Training] -> [Evaluation] -> [Deployment]";
-        let lines = render_diagram(input, 80);
+        let lines = render_diagram(input, 80, 1);
         for line in &lines {
             let text: String = line.segments.iter().map(|s| s.text.as_str()).collect();
             let char_count = text.chars().count();
@@ -537,6 +634,29 @@ mod tests {
                 text
             );
         }
+    }
+
+    #[test]
+    fn test_highlight_parsing() {
+        let input = "[A] -> [B] -> [C]\nhighlight: 1 A, B\nhighlight: 2 C";
+        let diagram = parse_diagram(input);
+        assert_eq!(diagram.highlights.len(), 2);
+        assert_eq!(diagram.highlights[&1], vec!["A", "B"]);
+        assert_eq!(diagram.highlights[&2], vec!["C"]);
+    }
+
+    #[test]
+    fn test_highlight_produces_styled_segments() {
+        let input = "[A] -> [B]\nhighlight: 1 A";
+        let lines = render_diagram(input, 80, 1);
+        let has_key = lines.iter().any(|l| {
+            l.segments.iter().any(|s| s.style.highlight.as_deref() == Some("key"))
+        });
+        let has_dim = lines.iter().any(|l| {
+            l.segments.iter().any(|s| s.style.highlight.as_deref() == Some("dim"))
+        });
+        assert!(has_key, "should have highlighted segments");
+        assert!(has_dim, "should have dimmed segments");
     }
 
     #[test]

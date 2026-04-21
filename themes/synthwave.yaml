@@ -49,6 +49,8 @@ highlights:
   quote:
     fg: "palette:accent"
     italic: true
+  dim:
+    fg: "#332255"
 
 footer:
   fg: "palette:muted"

@@ -33,6 +33,7 @@ impl WindowRect {
 pub struct RenderEngine<'a> {
     rects: Vec<WindowRect>,
     cursor_row: u16,
+    scroll_offset: u16,
     fg: Option<Color>,
     bg: Option<Color>,
     default_fg: Option<Color>,
@@ -45,12 +46,17 @@ impl<'a> RenderEngine<'a> {
         Self {
             rects: vec![WindowRect::from_rect(area)],
             cursor_row: 0,
+            scroll_offset: 0,
             fg: None,
             bg: None,
             default_fg: None,
             default_bg: None,
             theme: None,
         }
+    }
+
+    pub fn set_scroll_offset(&mut self, offset: u16) {
+        self.scroll_offset = offset;
     }
 
     pub fn set_theme(&mut self, theme: &'a Theme) {
@@ -72,6 +78,25 @@ impl<'a> RenderEngine<'a> {
         for op in ops {
             self.render_one(op, frame);
         }
+    }
+
+    pub fn measure_height(ops: &[RenderOp]) -> u16 {
+        let mut row: u16 = 0;
+        for op in ops {
+            match op {
+                RenderOp::ClearRect => row = 0,
+                RenderOp::JumpToRow { row: r } => row = *r,
+                RenderOp::RenderText { .. } => row += 1,
+                RenderOp::Spacer { lines } => row += lines,
+                RenderOp::RenderChart { height, .. } => row += height,
+                RenderOp::RenderImage { lines, .. } => row += lines.len() as u16,
+                RenderOp::RenderPhotoBackground { .. } => {}
+                RenderOp::PushWindowRect { .. }
+                | RenderOp::PopWindowRect
+                | RenderOp::SetColors { .. } => {}
+            }
+        }
+        row
     }
 
     fn current_rect(&self) -> &WindowRect {
@@ -122,18 +147,33 @@ impl<'a> RenderEngine<'a> {
             RenderOp::RenderImage { lines, width } => {
                 self.render_image(lines, *width, frame);
             }
+            RenderOp::RenderPhotoBackground { lines } => {
+                self.render_photo_background(lines, frame);
+            }
         }
     }
 
-    fn render_text(&mut self, text: &StyledText, alignment: &Alignment, frame: &mut Frame) {
-        let rect = self.current_rect();
-        let abs_y = rect.y + self.cursor_row;
-
-        // Don't render outside the window
-        if abs_y >= rect.y + rect.height {
-            self.cursor_row += 1;
-            return;
+    fn screen_y(&self, rect: &WindowRect) -> Option<u16> {
+        if self.cursor_row < self.scroll_offset {
+            return None; // above viewport
         }
+        let vis_row = self.cursor_row - self.scroll_offset;
+        if vis_row >= rect.height {
+            return None; // below viewport
+        }
+        Some(rect.y + vis_row)
+    }
+
+    fn render_text(&mut self, text: &StyledText, alignment: &Alignment, frame: &mut Frame) {
+        let rect = self.current_rect().clone();
+
+        let screen_y = self.screen_y(&rect);
+        self.cursor_row += 1;
+
+        let screen_y = match screen_y {
+            Some(y) => y,
+            None => return,
+        };
 
         let spans: Vec<Span> = text
             .segments
@@ -155,18 +195,17 @@ impl<'a> RenderEngine<'a> {
 
         let area = Rect {
             x: rect.x + x_offset,
-            y: abs_y,
+            y: screen_y,
             width: rect.width.saturating_sub(x_offset),
             height: 1,
         };
 
-        // If we have a background color, fill the full width first
         if self.bg.is_some() {
             let bg_style = Style::default().bg(self.bg.unwrap());
             let fill = " ".repeat(rect.width as usize);
             let fill_area = Rect {
                 x: rect.x,
-                y: abs_y,
+                y: screen_y,
                 width: rect.width,
                 height: 1,
             };
@@ -177,8 +216,6 @@ impl<'a> RenderEngine<'a> {
         }
 
         frame.render_widget(ratatui::widgets::Paragraph::new(line), area);
-
-        self.cursor_row += 1;
     }
 
     fn render_chart(
@@ -188,19 +225,21 @@ impl<'a> RenderEngine<'a> {
         height: u16,
         frame: &mut Frame,
     ) {
-        let rect = self.current_rect();
-        let abs_y = rect.y + self.cursor_row;
-        let available_height = rect.height.saturating_sub(self.cursor_row);
+        let rect = self.current_rect().clone();
+        let vis_start = self.cursor_row.saturating_sub(self.scroll_offset);
+        let available_height = rect.height.saturating_sub(vis_start);
         let chart_height = height.min(available_height);
 
-        if chart_height < 3 {
-            self.cursor_row += chart_height;
+        if chart_height < 3 || self.cursor_row + height <= self.scroll_offset {
+            self.cursor_row += height;
             return;
         }
 
+        let screen_y = rect.y + self.cursor_row.saturating_sub(self.scroll_offset);
+
         let chart_area = Rect {
             x: rect.x,
-            y: abs_y,
+            y: screen_y,
             width: rect.width,
             height: chart_height,
         };
@@ -325,7 +364,7 @@ impl<'a> RenderEngine<'a> {
             }
         }
 
-        self.cursor_row += chart_height;
+        self.cursor_row += height;
     }
 
     fn render_image(
@@ -337,28 +376,49 @@ impl<'a> RenderEngine<'a> {
         let rect = self.current_rect().clone();
 
         for line in lines {
-            let abs_y = rect.y + self.cursor_row;
-            if abs_y >= rect.y + rect.height {
-                break;
+            if let Some(screen_y) = self.screen_y(&rect) {
+                let x_offset = rect.width.saturating_sub(img_width) / 2;
+
+                let area = Rect {
+                    x: rect.x + x_offset,
+                    y: screen_y,
+                    width: img_width.min(rect.width),
+                    height: 1,
+                };
+
+                frame.render_widget(
+                    ratatui::widgets::Paragraph::new(line.clone()),
+                    area,
+                );
             }
 
-            // Center the image horizontally
-            let x_offset = rect.width.saturating_sub(img_width) / 2;
+            self.cursor_row += 1;
+        }
+    }
 
+    fn render_photo_background(
+        &mut self,
+        lines: &[ratatui::text::Line<'static>],
+        frame: &mut Frame,
+    ) {
+        let rect = self.current_rect().clone();
+        for (i, line) in lines.iter().enumerate() {
+            let y = rect.y + i as u16;
+            if y >= rect.y + rect.height {
+                break;
+            }
             let area = Rect {
-                x: rect.x + x_offset,
-                y: abs_y,
-                width: img_width.min(rect.width),
+                x: rect.x,
+                y,
+                width: rect.width,
                 height: 1,
             };
-
             frame.render_widget(
                 ratatui::widgets::Paragraph::new(line.clone()),
                 area,
             );
-
-            self.cursor_row += 1;
         }
+        // Don't advance cursor — text will overlay on top
     }
 
     fn segment_to_style(&self, seg_style: &SegmentStyle) -> Style {

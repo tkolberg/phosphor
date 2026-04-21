@@ -15,6 +15,7 @@ use crate::notes::protocol::NoteMessage;
 use crate::notes::server::NotesServer;
 use crate::render::engine::RenderEngine;
 use crate::render::lower::{Lower, LowerContext};
+use crate::render::ops::RenderOp;
 use crate::slide::Presentation;
 use crate::theme::Theme;
 use crate::transition::{Cell, Transition, TransitionDirection};
@@ -27,6 +28,7 @@ pub struct App {
     theme: Theme,
     current_slide: usize,
     visible_chunks: usize,
+    scroll_offset: u16,
     should_quit: bool,
     notes_server: Option<NotesServer>,
     transition: Option<Transition>,
@@ -50,6 +52,7 @@ impl App {
             theme,
             current_slide: 0,
             visible_chunks: 1,
+            scroll_offset: 0,
             should_quit: false,
             notes_server: None,
             transition: None,
@@ -157,6 +160,16 @@ impl App {
         let content_area = self.content_area(area);
 
         if let Some(slide) = self.presentation.slides.get(self.current_slide) {
+            // Check if this is a photo slide
+            let has_photo = slide.chunks.iter().any(|c| {
+                c.elements.iter().any(|e| matches!(e, SlideElement::Photo { .. }))
+            });
+
+            if has_photo {
+                self.draw_photo_slide(frame, area, content_area, slide, fg_color);
+                return;
+            }
+
             let ctx = LowerContext {
                 window_width: content_area.width,
                 window_height: content_area.height,
@@ -164,18 +177,240 @@ impl App {
                 visible_chunks: self.visible_chunks,
             };
 
-            let mut all_ops = Vec::new();
+            // Lower elements individually to find the split between fixed and scrollable content.
+            // Fixed = everything up through the last visual element (heading, chart, diagram, wireframe, image).
+            // Scrollable = everything after that.
+            let mut element_ops: Vec<(bool, Vec<RenderOp>)> = Vec::new();
             for chunk in slide.chunks.iter().take(self.visible_chunks) {
                 for element in &chunk.elements {
-                    all_ops.extend(element.lower(&ctx));
+                    let is_visual = matches!(
+                        element,
+                        SlideElement::Heading { .. }
+                            | SlideElement::Chart { .. }
+                            | SlideElement::Diagram { .. }
+                            | SlideElement::Wireframe { .. }
+                            | SlideElement::Image { .. }
+                            | SlideElement::Histogram { .. }
+                    );
+                    element_ops.push((is_visual, element.lower(&ctx)));
                 }
             }
 
-            let mut engine = RenderEngine::new(content_area);
-            engine.set_theme(&self.theme);
-            engine.set_default_colors(fg_color, bg_color);
-            engine.render(&all_ops, frame);
+            let last_visual_idx = element_ops.iter().rposition(|(vis, _)| *vis);
+
+            if self.scroll_offset == 0 || last_visual_idx.is_none() {
+                // No scroll or no visual elements — render everything in one pass
+                let all_ops: Vec<RenderOp> =
+                    element_ops.into_iter().flat_map(|(_, ops)| ops).collect();
+
+                let render_area = if slide.center {
+                    let content_height = RenderEngine::measure_height(&all_ops);
+                    let y_offset = content_area.height.saturating_sub(content_height) / 2;
+                    Rect {
+                        x: content_area.x,
+                        y: content_area.y + y_offset,
+                        width: content_area.width,
+                        height: content_area.height.saturating_sub(y_offset),
+                    }
+                } else {
+                    content_area
+                };
+
+                let mut engine = RenderEngine::new(render_area);
+                engine.set_theme(&self.theme);
+                engine.set_default_colors(fg_color, bg_color);
+                engine.set_scroll_offset(self.scroll_offset);
+                engine.render(&all_ops, frame);
+            } else {
+                let split = last_visual_idx.unwrap() + 1;
+                let fixed_ops: Vec<RenderOp> = element_ops[..split]
+                    .iter()
+                    .flat_map(|(_, ops)| ops.clone())
+                    .collect();
+                let scroll_ops: Vec<RenderOp> = element_ops[split..]
+                    .iter()
+                    .flat_map(|(_, ops)| ops.clone())
+                    .collect();
+
+                // Render fixed header without scroll
+                let mut engine = RenderEngine::new(content_area);
+                engine.set_theme(&self.theme);
+                engine.set_default_colors(fg_color, bg_color);
+                engine.render(&fixed_ops, frame);
+                let fixed_height = engine.cursor_row();
+
+                // Render scrollable body in remaining space
+                let scroll_area = Rect {
+                    x: content_area.x,
+                    y: content_area.y + fixed_height,
+                    width: content_area.width,
+                    height: content_area.height.saturating_sub(fixed_height),
+                };
+                let mut scroll_engine = RenderEngine::new(scroll_area);
+                scroll_engine.set_theme(&self.theme);
+                scroll_engine.set_default_colors(fg_color, bg_color);
+                scroll_engine.set_scroll_offset(self.scroll_offset);
+                scroll_engine.render(&scroll_ops, frame);
+            }
         }
+    }
+
+    fn draw_photo_slide(
+        &self,
+        frame: &mut ratatui::Frame,
+        full_area: Rect,
+        content_area: Rect,
+        slide: &crate::slide::Slide,
+        fg_color: Option<Color>,
+    ) {
+        // Render photo background to the full frame area (no margins)
+        let photo_ctx = LowerContext {
+            window_width: full_area.width,
+            window_height: full_area.height,
+            theme: &self.theme,
+            visible_chunks: self.visible_chunks,
+        };
+
+        // Lower only the photo element to get the background
+        for chunk in slide.chunks.iter().take(self.visible_chunks) {
+            for element in &chunk.elements {
+                if matches!(element, SlideElement::Photo { .. }) {
+                    let ops = element.lower(&photo_ctx);
+                    let mut engine = RenderEngine::new(full_area);
+                    engine.set_theme(&self.theme);
+                    engine.render(&ops, frame);
+                }
+            }
+        }
+
+        // Lower all non-photo elements for text overlay
+        let text_ctx = LowerContext {
+            window_width: content_area.width,
+            window_height: content_area.height,
+            theme: &self.theme,
+            visible_chunks: self.visible_chunks,
+        };
+
+        let mut text_ops: Vec<RenderOp> = Vec::new();
+        for chunk in slide.chunks.iter().take(self.visible_chunks) {
+            for element in &chunk.elements {
+                if !matches!(element, SlideElement::Photo { .. }) {
+                    text_ops.extend(element.lower(&text_ctx));
+                }
+            }
+        }
+
+        if text_ops.is_empty() {
+            return;
+        }
+
+        // Measure text height and position the band
+        let text_height = RenderEngine::measure_height(&text_ops);
+        let padding = 1u16;
+        let band_height = text_height + padding * 2;
+        let band_y = if slide.center {
+            // Center the text band vertically
+            content_area.y + content_area.height.saturating_sub(band_height) / 2
+        } else {
+            // Pin text band to the bottom
+            content_area.y + content_area.height.saturating_sub(band_height)
+        };
+
+        // Draw a dark semi-transparent band behind the text
+        let band_color = Color::Rgb(0, 0, 0);
+        for row in 0..band_height {
+            let y = band_y + row;
+            if y < full_area.y + full_area.height {
+                let area = Rect {
+                    x: full_area.x,
+                    y,
+                    width: full_area.width,
+                    height: 1,
+                };
+                frame.render_widget(
+                    ratatui::widgets::Paragraph::new(
+                        ratatui::text::Line::from(
+                            ratatui::text::Span::styled(
+                                " ".repeat(full_area.width as usize),
+                                ratatui::style::Style::default().bg(band_color),
+                            )
+                        )
+                    ),
+                    area,
+                );
+            }
+        }
+
+        // Render text on top of the band
+        let text_area = Rect {
+            x: content_area.x,
+            y: band_y + padding,
+            width: content_area.width,
+            height: text_height,
+        };
+        let mut engine = RenderEngine::new(text_area);
+        engine.set_theme(&self.theme);
+        engine.set_default_colors(fg_color, Some(band_color));
+        engine.render(&text_ops, frame);
+    }
+
+    /// Returns (fixed_height, scrollable_height, available_for_scroll) for overflow calculation.
+    fn measure_content(&self, area: Rect) -> (u16, u16, u16) {
+        let content_area = self.content_area(area);
+        if let Some(slide) = self.presentation.slides.get(self.current_slide) {
+            let ctx = LowerContext {
+                window_width: content_area.width,
+                window_height: content_area.height,
+                theme: &self.theme,
+                visible_chunks: self.visible_chunks,
+            };
+
+            let mut element_ops: Vec<(bool, Vec<RenderOp>)> = Vec::new();
+            for chunk in slide.chunks.iter().take(self.visible_chunks) {
+                for element in &chunk.elements {
+                    let is_visual = matches!(
+                        element,
+                        SlideElement::Heading { .. }
+                            | SlideElement::Chart { .. }
+                            | SlideElement::Diagram { .. }
+                            | SlideElement::Wireframe { .. }
+                            | SlideElement::Image { .. }
+                            | SlideElement::Histogram { .. }
+                    );
+                    element_ops.push((is_visual, element.lower(&ctx)));
+                }
+            }
+
+            let last_visual_idx = element_ops.iter().rposition(|(vis, _)| *vis);
+
+            if let Some(split) = last_visual_idx {
+                let split = split + 1;
+                let fixed_ops: Vec<RenderOp> = element_ops[..split]
+                    .iter()
+                    .flat_map(|(_, ops)| ops.clone())
+                    .collect();
+                let scroll_ops: Vec<RenderOp> = element_ops[split..]
+                    .iter()
+                    .flat_map(|(_, ops)| ops.clone())
+                    .collect();
+                let fixed_h = RenderEngine::measure_height(&fixed_ops);
+                let scroll_h = RenderEngine::measure_height(&scroll_ops);
+                let available = content_area.height.saturating_sub(fixed_h);
+                (fixed_h, scroll_h, available)
+            } else {
+                let all_ops: Vec<RenderOp> =
+                    element_ops.into_iter().flat_map(|(_, ops)| ops).collect();
+                let total = RenderEngine::measure_height(&all_ops);
+                (0, total, content_area.height)
+            }
+        } else {
+            (0, 0, content_area.height)
+        }
+    }
+
+    fn max_scroll_offset(&self, area: Rect) -> u16 {
+        let (_fixed_h, scroll_h, available) = self.measure_content(area);
+        scroll_h.saturating_sub(available)
     }
 
     fn draw_transition(
@@ -364,7 +599,7 @@ impl App {
                 .iter()
                 .take(self.visible_chunks)
                 .flat_map(|c| &c.elements)
-                .any(|e| matches!(e, SlideElement::Chart { .. } | SlideElement::Diagram { .. } | SlideElement::Wireframe { .. }))
+                .any(|e| matches!(e, SlideElement::Chart { .. } | SlideElement::Diagram { .. } | SlideElement::Wireframe { .. } | SlideElement::Histogram { .. } | SlideElement::Photo { .. }))
         } else {
             false
         }
@@ -392,9 +627,16 @@ impl App {
         action: Action,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) {
+        // If a transition is still playing, skip it immediately
+        if self.transition.is_some() {
+            self.transition = None;
+        }
+
+        let area = terminal.get_frame().area();
         let total = self.presentation.slides.len();
         let prev_slide = self.current_slide;
         let prev_chunks = self.visible_chunks;
+        let prev_scroll = self.scroll_offset;
 
         // Capture before-frame for chunk reveals (same slide, adding content)
         let before_frame = match action {
@@ -403,7 +645,7 @@ impl App {
             {
                 Some(self.capture_frame(terminal))
             }
-            Action::PrevSlide if self.visible_chunks > 1 => {
+            Action::PrevSlide if self.visible_chunks > 1 && self.scroll_offset == 0 => {
                 Some(self.capture_frame(terminal))
             }
             _ => None,
@@ -414,36 +656,53 @@ impl App {
                 let chunk_count = self.current_slide_chunk_count();
                 if self.visible_chunks < chunk_count {
                     self.visible_chunks += 1;
-                } else if self.current_slide + 1 < total {
-                    self.current_slide += 1;
-                    self.visible_chunks = 1;
+                    // Auto-scroll so the new chunk's content is visible
+                    self.scroll_offset = self.max_scroll_offset(area);
+                } else {
+                    let max_scroll = self.max_scroll_offset(area);
+                    if self.scroll_offset < max_scroll {
+                        let (_, _, available) = self.measure_content(area);
+                        let step = available.saturating_sub(2).max(1);
+                        self.scroll_offset = (self.scroll_offset + step).min(max_scroll);
+                    } else if self.current_slide + 1 < total {
+                        self.current_slide += 1;
+                        self.visible_chunks = 1;
+                        self.scroll_offset = 0;
+                    }
                 }
             }
             Action::PrevSlide => {
-                if self.visible_chunks > 1 {
+                if self.scroll_offset > 0 {
+                    let (_, _, available) = self.measure_content(area);
+                    let step = available.saturating_sub(2).max(1);
+                    self.scroll_offset = self.scroll_offset.saturating_sub(step);
+                } else if self.visible_chunks > 1 {
                     self.visible_chunks -= 1;
                 } else if self.current_slide > 0 {
                     self.current_slide -= 1;
                     self.visible_chunks = self.current_slide_chunk_count();
+                    self.scroll_offset = 0;
                 }
             }
             Action::FirstSlide => {
                 self.current_slide = 0;
                 self.visible_chunks = 1;
+                self.scroll_offset = 0;
             }
             Action::LastSlide => {
                 self.current_slide = total.saturating_sub(1);
                 self.visible_chunks = self.current_slide_chunk_count();
+                self.scroll_offset = 0;
             }
             Action::Quit => {
                 self.should_quit = true;
             }
         }
 
-        // If content changed, start a transition
-        let changed = self.current_slide != prev_slide || self.visible_chunks != prev_chunks;
-        if changed && !self.should_quit {
-            // Pass before-frame only for same-slide chunk changes
+        // If content changed, start a transition (but not for scroll-only changes)
+        let changed = self.current_slide != prev_slide || self.visible_chunks != prev_chunks || self.scroll_offset != prev_scroll;
+        let scroll_only = self.current_slide == prev_slide && self.visible_chunks == prev_chunks && self.scroll_offset != prev_scroll;
+        if changed && !self.should_quit && !scroll_only {
             let prev = if self.current_slide == prev_slide {
                 before_frame
             } else {

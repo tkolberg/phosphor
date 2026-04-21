@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use ratatui::style::Color;
@@ -6,6 +7,10 @@ use crate::braille::BrailleCanvas;
 
 /// Cached detector model — built once, reused every frame.
 static DETECTOR_MODEL: OnceLock<WireframeModel> = OnceLock::new();
+
+/// Cache for OBJ-loaded models, keyed by absolute file path.
+static OBJ_CACHE: std::sync::LazyLock<Mutex<HashMap<String, WireframeModel>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Camera animation state — tracks current keyframe target and transition timing.
 static CAMERA_ANIM: Mutex<CameraAnimState> = Mutex::new(CameraAnimState {
@@ -112,37 +117,111 @@ impl CameraKeyframe {
     }
 }
 
+/// A particle path definition: particles travel from `from` to `to` in normalized coords.
+#[derive(Debug, Clone)]
+pub struct ParticlePath {
+    pub from: Vec3,
+    pub to: Vec3,
+    pub color: Color,
+    pub interval: f64,
+    pub speed: f64,
+    pub trail: f64,
+    /// If true, interpolate along a parabolic arc (z-offset above straight path).
+    pub arc: bool,
+    /// Height of the arc peak (as fraction of path length). 0.0 = flat.
+    pub arc_height: f64,
+}
+
+impl Default for ParticlePath {
+    fn default() -> Self {
+        Self {
+            from: Vec3::new(0.0, 0.0, -1.0),
+            to: Vec3::new(0.0, 0.0, 1.0),
+            color: Color::Rgb(0, 229, 255),
+            interval: 2.0,
+            speed: 4.0,
+            trail: 0.15,
+            arc: false,
+            arc_height: 0.15,
+        }
+    }
+}
+
+/// A text label positioned in 3D space, rendered as terminal text over the braille canvas.
+#[derive(Debug, Clone)]
+pub struct Label {
+    pub text: String,
+    pub pos: Vec3,
+    pub color: Color,
+}
+
 /// Spec parsed from a `wireframe` code block.
 #[derive(Debug, Clone)]
 pub struct WireframeSpec {
     pub model: String,
+    /// OBJ file path (relative to slide file). Overrides `model` when set.
+    pub file: Option<String>,
+    /// Resolved absolute path to OBJ file.
+    pub file_resolved: Option<std::path::PathBuf>,
+    /// Wireframe color for OBJ models (default: cyan).
+    pub color: Color,
     /// Azimuth angle in degrees.
     pub azimuth: f64,
     /// Elevation angle in degrees.
     pub elevation: f64,
     /// Continuous rotation speed in degrees/second (0 = static).
     pub spin: f64,
-    /// Animate muon particles through the detector.
+    /// Animate muon particles through the detector (legacy, detector-specific).
     pub particles: bool,
+    /// Generic particle paths.
+    pub particle_paths: Vec<ParticlePath>,
     /// Camera keyframes for chunk-driven camera movement.
     /// Empty = use default single camera from azimuth/elevation/distance.
     pub cameras: Vec<CameraKeyframe>,
     /// Duration of camera transitions in seconds.
     pub camera_transition: f64,
+    /// Text labels positioned in 3D model space.
+    pub labels: Vec<Label>,
 }
 
 impl Default for WireframeSpec {
     fn default() -> Self {
         Self {
             model: "detector".to_string(),
+            file: None,
+            file_resolved: None,
+            color: Color::Rgb(0, 229, 255),
             azimuth: 35.0,
             elevation: 20.0,
             spin: 0.0,
             particles: false,
+            particle_paths: Vec::new(),
             cameras: Vec::new(),
             camera_transition: 2.0,
+            labels: Vec::new(),
         }
     }
+}
+
+fn parse_label(input: &str) -> Label {
+    let mut text = String::new();
+    let mut pos = Vec3::new(0.0, 0.0, 0.0);
+    let mut color = Color::Rgb(220, 220, 220);
+    for token in input.split_whitespace() {
+        if let Some((k, v)) = token.split_once('=') {
+            match k {
+                "text" => text = v.replace('_', " "),
+                "pos" => {
+                    if let Some(p) = parse_vec3(v) {
+                        pos = p;
+                    }
+                }
+                "color" => color = parse_color_value(v),
+                _ => {}
+            }
+        }
+    }
+    Label { text, pos, color }
 }
 
 /// Parse a wireframe spec from YAML-like key: value lines.
@@ -152,7 +231,7 @@ impl Default for WireframeSpec {
 /// camera: distance=2.0 focus_z=-0.5 azimuth=25 elevation=15
 /// camera: distance=3.2 azimuth=35 elevation=20
 /// ```
-pub fn parse_wireframe_spec(input: &str) -> WireframeSpec {
+pub fn parse_wireframe_spec(input: &str, base_dir: &std::path::Path) -> WireframeSpec {
     let mut spec = WireframeSpec::default();
     for line in input.lines() {
         let line = line.trim();
@@ -161,6 +240,13 @@ pub fn parse_wireframe_spec(input: &str) -> WireframeSpec {
             let val = val.trim();
             match key {
                 "model" => spec.model = val.to_string(),
+                "file" => {
+                    spec.file = Some(val.to_string());
+                    spec.file_resolved = Some(base_dir.join(val));
+                }
+                "color" => {
+                    spec.color = parse_color_value(val);
+                }
                 "azimuth" => {
                     if let Ok(v) = val.parse() {
                         spec.azimuth = v;
@@ -188,8 +274,14 @@ pub fn parse_wireframe_spec(input: &str) -> WireframeSpec {
                         spec.elevation = el;
                     }
                 }
+                "particle" => {
+                    spec.particle_paths.push(parse_particle_path(val));
+                }
                 "camera" => {
                     spec.cameras.push(parse_camera_keyframe(val));
+                }
+                "label" => {
+                    spec.labels.push(parse_label(val));
                 }
                 "camera_transition" => {
                     if let Ok(v) = val.parse() {
@@ -201,6 +293,32 @@ pub fn parse_wireframe_spec(input: &str) -> WireframeSpec {
         }
     }
     spec
+}
+
+fn parse_color_value(val: &str) -> Color {
+    if let Some(hex) = val.strip_prefix('#') {
+        if hex.len() == 6 {
+            if let (Ok(r), Ok(g), Ok(b)) = (
+                u8::from_str_radix(&hex[0..2], 16),
+                u8::from_str_radix(&hex[2..4], 16),
+                u8::from_str_radix(&hex[4..6], 16),
+            ) {
+                return Color::Rgb(r, g, b);
+            }
+        }
+    }
+    match val.to_lowercase().as_str() {
+        "red" => Color::Rgb(255, 80, 80),
+        "green" => Color::Rgb(0, 200, 120),
+        "blue" => Color::Rgb(100, 149, 237),
+        "cyan" => Color::Rgb(0, 229, 255),
+        "magenta" | "pink" => Color::Rgb(255, 41, 117),
+        "yellow" => Color::Rgb(255, 211, 25),
+        "orange" => Color::Rgb(255, 165, 0),
+        "purple" => Color::Rgb(147, 112, 219),
+        "white" => Color::Rgb(220, 220, 220),
+        _ => Color::Rgb(0, 229, 255),
+    }
 }
 
 /// Parse a camera keyframe from space-separated key=value pairs.
@@ -225,6 +343,59 @@ fn parse_camera_keyframe(input: &str) -> CameraKeyframe {
         }
     }
     kf
+}
+
+fn parse_vec3(s: &str) -> Option<Vec3> {
+    let parts: Vec<f64> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+    if parts.len() == 3 {
+        Some(Vec3::new(parts[0], parts[1], parts[2]))
+    } else {
+        None
+    }
+}
+
+fn parse_particle_path(input: &str) -> ParticlePath {
+    let mut pp = ParticlePath::default();
+    for token in input.split_whitespace() {
+        if let Some((k, v)) = token.split_once('=') {
+            match k {
+                "from" => {
+                    if let Some(p) = parse_vec3(v) {
+                        pp.from = p;
+                    }
+                }
+                "to" => {
+                    if let Some(p) = parse_vec3(v) {
+                        pp.to = p;
+                    }
+                }
+                "color" => pp.color = parse_color_value(v),
+                "interval" => {
+                    if let Ok(v) = v.parse() {
+                        pp.interval = v;
+                    }
+                }
+                "speed" => {
+                    if let Ok(v) = v.parse() {
+                        pp.speed = v;
+                    }
+                }
+                "trail" => {
+                    if let Ok(v) = v.parse() {
+                        pp.trail = v;
+                    }
+                }
+                "arc" => pp.arc = v == "true" || v == "yes",
+                "arc_height" => {
+                    if let Ok(v) = v.parse() {
+                        pp.arc_height = v;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    pp
 }
 
 /// Build the DiRAC detector geometry as a wireframe model.
@@ -425,6 +596,115 @@ fn add_box_offset(
     }
 }
 
+/// Load an OBJ file and produce a wireframe model.
+/// Parses `v` (vertex) and `f` (face) lines. Face edges become wireframe edges.
+/// The model is auto-centered and normalized to fit in [-1, 1].
+fn load_obj(path: &std::path::Path, color: Color) -> Result<WireframeModel, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read {:?}: {}", path, e))?;
+
+    let mut verts: Vec<Vec3> = Vec::new();
+    let mut raw_edges: Vec<(usize, usize)> = Vec::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with("v ") {
+            let parts: Vec<f64> = line[2..]
+                .split_whitespace()
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            if parts.len() >= 3 {
+                verts.push(Vec3::new(parts[0], parts[1], parts[2]));
+            }
+        } else if line.starts_with("f ") {
+            let indices: Vec<usize> = line[2..]
+                .split_whitespace()
+                .filter_map(|s| {
+                    // OBJ face indices can be v, v/vt, v/vt/vn, or v//vn
+                    let idx_str = s.split('/').next()?;
+                    idx_str.parse::<usize>().ok()
+                })
+                .collect();
+            for i in 0..indices.len() {
+                let a = indices[i];
+                let b = indices[(i + 1) % indices.len()];
+                let mut pair = [a, b];
+                pair.sort();
+                raw_edges.push((pair[0], pair[1]));
+            }
+        } else if line.starts_with("l ") {
+            let indices: Vec<usize> = line[2..]
+                .split_whitespace()
+                .filter_map(|s| s.parse::<usize>().ok())
+                .collect();
+            for i in 0..indices.len().saturating_sub(1) {
+                let a = indices[i];
+                let b = indices[i + 1];
+                let mut pair = [a, b];
+                pair.sort();
+                raw_edges.push((pair[0], pair[1]));
+            }
+        }
+    }
+
+    if verts.is_empty() {
+        return Err("OBJ file contains no vertices".to_string());
+    }
+
+    // Deduplicate edges
+    raw_edges.sort();
+    raw_edges.dedup();
+
+    // Compute bounding box and normalize to [-1, 1]
+    let mut min = Vec3::new(f64::MAX, f64::MAX, f64::MAX);
+    let mut max = Vec3::new(f64::MIN, f64::MIN, f64::MIN);
+    for v in &verts {
+        min.x = min.x.min(v.x);
+        min.y = min.y.min(v.y);
+        min.z = min.z.min(v.z);
+        max.x = max.x.max(v.x);
+        max.y = max.y.max(v.y);
+        max.z = max.z.max(v.z);
+    }
+    let center = Vec3::new(
+        (min.x + max.x) / 2.0,
+        (min.y + max.y) / 2.0,
+        (min.z + max.z) / 2.0,
+    );
+    let extent = (max.x - min.x).max(max.y - min.y).max(max.z - min.z);
+    let scale = if extent > 0.0 { 2.0 / extent } else { 1.0 };
+
+    let normalized: Vec<Vec3> = verts
+        .iter()
+        .map(|v| Vec3::new(
+            (v.x - center.x) * scale,
+            (v.y - center.y) * scale,
+            (v.z - center.z) * scale,
+        ))
+        .collect();
+
+    let no_cell_min = Vec3::new(-999.0, -999.0, -999.0);
+    let no_cell_max = Vec3::new(-998.0, -998.0, -998.0);
+
+    let edges = raw_edges
+        .into_iter()
+        .filter_map(|(ai, bi)| {
+            // OBJ indices are 1-based
+            let a = *normalized.get(ai.checked_sub(1)?)?;
+            let b = *normalized.get(bi.checked_sub(1)?)?;
+            Some(Edge {
+                a,
+                b,
+                color,
+                cell_min: no_cell_min,
+                cell_max: no_cell_max,
+            })
+        })
+        .collect();
+
+    Ok(WireframeModel { edges })
+}
+
 /// Attenuate an RGB color by a brightness factor (0.0 = black, 1.0 = full).
 fn fade_color(color: Color, brightness: f64) -> Color {
     match color {
@@ -503,6 +783,61 @@ fn resolve_camera(spec: &WireframeSpec, camera_index: usize) -> CameraKeyframe {
     prev.lerp(target_kf, t)
 }
 
+/// Overlay a text label onto a rendered braille Line at a given column position.
+fn overlay_label(
+    line: &mut ratatui::text::Line<'static>,
+    col: usize,
+    text: &str,
+    color: Color,
+) {
+    use ratatui::style::Style;
+    use ratatui::text::Span;
+
+    // Flatten existing spans into a char vector with colors
+    let mut chars: Vec<(char, Option<Color>)> = Vec::new();
+    for span in line.spans.iter() {
+        let fg = span.style.fg;
+        for ch in span.content.chars() {
+            chars.push((ch, fg));
+        }
+    }
+
+    // Overlay label text
+    for (i, ch) in text.chars().enumerate() {
+        let pos = col + i;
+        if pos < chars.len() {
+            chars[pos] = (ch, Some(color));
+        }
+    }
+
+    // Rebuild spans with RLE on color
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut current_color: Option<Color> = None;
+    let mut current_text = String::new();
+
+    for &(ch, c) in &chars {
+        if c != current_color && !current_text.is_empty() {
+            let style = match current_color {
+                Some(c) => Style::default().fg(c),
+                None => Style::default(),
+            };
+            spans.push(Span::styled(current_text.clone(), style));
+            current_text.clear();
+        }
+        current_color = c;
+        current_text.push(ch);
+    }
+    if !current_text.is_empty() {
+        let style = match current_color {
+            Some(c) => Style::default().fg(c),
+            None => Style::default(),
+        };
+        spans.push(Span::styled(current_text, style));
+    }
+
+    *line = ratatui::text::Line::from(spans);
+}
+
 /// Render a wireframe model onto a BrailleCanvas.
 ///
 /// `camera_index` selects which camera keyframe to use (tied to visible_chunks).
@@ -512,9 +847,22 @@ pub fn render_wireframe(
     term_rows: u16,
     camera_index: usize,
 ) -> Vec<ratatui::text::Line<'static>> {
-    let model = match spec.model.as_str() {
-        "detector" => DETECTOR_MODEL.get_or_init(build_detector),
-        _ => DETECTOR_MODEL.get_or_init(build_detector),
+    // Resolve model: file-based OBJ takes priority, then built-in models
+    let obj_model;
+    let model = if let Some(ref path) = spec.file_resolved {
+        let key = path.display().to_string();
+        let mut cache = OBJ_CACHE.lock().unwrap();
+        if !cache.contains_key(&key) {
+            let m = match load_obj(path, spec.color) {
+                Ok(m) => m,
+                Err(_) => WireframeModel { edges: vec![] },
+            };
+            cache.insert(key.clone(), m);
+        }
+        obj_model = cache.get(&key).unwrap().clone();
+        &obj_model
+    } else {
+        DETECTOR_MODEL.get_or_init(build_detector)
     };
 
     let cam = resolve_camera(spec, camera_index);
@@ -624,12 +972,42 @@ pub fn render_wireframe(
         }
     }
 
-    // Animate muon particles if enabled
+    // Animate muon particles if enabled (legacy detector-specific)
     if spec.particles {
         draw_particles(&mut canvas, az, el, camera_dist, fov, cx, cy, scale, &focus);
     }
 
-    canvas.render()
+    // Animate generic particle paths
+    for pp in &spec.particle_paths {
+        draw_particle_path(&mut canvas, pp, az, el, camera_dist, fov, cx, cy, scale, &focus);
+    }
+
+    let mut rendered = canvas.render();
+
+    // Overlay text labels at projected 3D positions
+    for label in &spec.labels {
+        let rotated = Vec3::new(
+            label.pos.x - focus.x,
+            label.pos.y - focus.y,
+            label.pos.z - focus.z,
+        )
+        .rotate_y(az)
+        .rotate_x(el);
+        if let Some((px, py)) = project(rotated, camera_dist, fov) {
+            let sx = (cx + px * scale) as isize;
+            let sy = (cy - py * scale) as isize;
+            // Convert braille pixel coords to cell coords
+            let col = sx / 2;
+            let row = sy / 4;
+            if row >= 0 && (row as usize) < rendered.len() && col >= 0 {
+                let row_idx = row as usize;
+                let col_idx = col as usize;
+                overlay_label(&mut rendered[row_idx], col_idx, &label.text, label.color);
+            }
+        }
+    }
+
+    rendered
 }
 
 /// Deterministic muon particle animation.
@@ -859,13 +1237,134 @@ fn lerp_color(a: Color, b: Color, t: f64) -> Color {
     }
 }
 
+/// Spherical linear interpolation between two points on a sphere.
+fn slerp(a: Vec3, b: Vec3, t: f64) -> Vec3 {
+    let dot = (a.x * b.x + a.y * b.y + a.z * b.z).clamp(-1.0, 1.0);
+    let omega = dot.acos();
+    if omega.abs() < 1e-6 {
+        // Nearly identical points — fall back to linear
+        return Vec3::new(
+            a.x + (b.x - a.x) * t,
+            a.y + (b.y - a.y) * t,
+            a.z + (b.z - a.z) * t,
+        );
+    }
+    let sin_omega = omega.sin();
+    let wa = ((1.0 - t) * omega).sin() / sin_omega;
+    let wb = (t * omega).sin() / sin_omega;
+    Vec3::new(
+        a.x * wa + b.x * wb,
+        a.y * wa + b.y * wb,
+        a.z * wa + b.z * wb,
+    )
+}
+
+fn draw_particle_path(
+    canvas: &mut BrailleCanvas,
+    pp: &ParticlePath,
+    az: f64,
+    el: f64,
+    camera_dist: f64,
+    fov: f64,
+    cx: f64,
+    cy: f64,
+    scale: f64,
+    focus: &Vec3,
+) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+
+    let travel_time = pp.speed;
+    let spawn_interval = pp.interval;
+    let trail_frac = pp.trail;
+
+    let hash = |seed: u64| -> f64 {
+        let x = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (x >> 33) as f64 / (1u64 << 31) as f64
+    };
+
+    let max_slots = (travel_time / spawn_interval).ceil() as u64 + 2;
+
+    let interpolate = |t: f64| -> Vec3 {
+        if pp.arc {
+            let dx = pp.to.x - pp.from.x;
+            let dy = pp.to.y - pp.from.y;
+            let dz = pp.to.z - pp.from.z;
+            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+            let height = pp.arc_height * dist;
+            Vec3::new(
+                pp.from.x + dx * t,
+                pp.from.y + dy * t,
+                pp.from.z + dz * t + height * (std::f64::consts::PI * t).sin(),
+            )
+        } else {
+            Vec3::new(
+                pp.from.x + (pp.to.x - pp.from.x) * t,
+                pp.from.y + (pp.to.y - pp.from.y) * t,
+                pp.from.z + (pp.to.z - pp.from.z) * t,
+            )
+        }
+    };
+
+    // Dim version of the particle color for the tail
+    let color_head = Color::Rgb(255, 255, 255);
+    let color_mid = pp.color;
+    let color_tail = fade_color(pp.color, 0.3);
+
+    for i in 0..max_slots {
+        let slot_time = (now / spawn_interval).floor() as u64 - i;
+        let birth = slot_time as f64 * spawn_interval;
+        let age = now - birth;
+
+        if age < 0.0 || age > travel_time {
+            continue;
+        }
+
+        let progress = age / travel_time;
+        let trail_start = (progress - trail_frac).max(0.0);
+
+        // Add slight random offset to each particle for visual variety
+        let _h = hash(slot_time);
+
+        let segments = [
+            (trail_start, trail_start + (progress - trail_start) * 0.33, color_tail),
+            (trail_start + (progress - trail_start) * 0.33, trail_start + (progress - trail_start) * 0.66, color_mid),
+            (trail_start + (progress - trail_start) * 0.66, progress, color_head),
+        ];
+
+        for (t0, t1, color) in segments {
+            let p0 = interpolate(t0);
+            let p1 = interpolate(t1);
+            let r0 = Vec3::new(p0.x - focus.x, p0.y - focus.y, p0.z - focus.z)
+                .rotate_y(az).rotate_x(el);
+            let r1 = Vec3::new(p1.x - focus.x, p1.y - focus.y, p1.z - focus.z)
+                .rotate_y(az).rotate_x(el);
+
+            let proj0 = project(r0, camera_dist, fov);
+            let proj1 = project(r1, camera_dist, fov);
+
+            if let (Some((x0, y0)), Some((x1, y1))) = (proj0, proj1) {
+                let sx0 = (cx + x0 * scale) as isize;
+                let sy0 = (cy - y0 * scale) as isize;
+                let sx1 = (cx + x1 * scale) as isize;
+                let sy1 = (cy - y1 * scale) as isize;
+                canvas.line_colored(sx0, sy0, sx1, sy1, color);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_parse_spec_defaults() {
-        let spec = parse_wireframe_spec("");
+        let spec = parse_wireframe_spec("", std::path::Path::new("."));
         assert_eq!(spec.model, "detector");
         assert!((spec.azimuth - 35.0).abs() < 0.01);
         assert!((spec.elevation - 20.0).abs() < 0.01);
@@ -873,7 +1372,7 @@ mod tests {
 
     #[test]
     fn test_parse_spec_rotate() {
-        let spec = parse_wireframe_spec("model: detector\nrotate: 45,30");
+        let spec = parse_wireframe_spec("model: detector\nrotate: 45,30", std::path::Path::new("."));
         assert!((spec.azimuth - 45.0).abs() < 0.01);
         assert!((spec.elevation - 30.0).abs() < 0.01);
     }
@@ -914,6 +1413,7 @@ mod tests {
     fn test_parse_camera_keyframes() {
         let spec = parse_wireframe_spec(
             "model: detector\ncamera: dist=2.0 fz=-0.9 az=25 el=15\ncamera: dist=3.2 az=35 el=20",
+            std::path::Path::new("."),
         );
         assert_eq!(spec.cameras.len(), 2);
         assert!((spec.cameras[0].distance - 2.0).abs() < 0.01);

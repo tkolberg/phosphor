@@ -309,7 +309,7 @@ fn parse_color_value(val: &str) -> Color {
     }
     match val.to_lowercase().as_str() {
         "red" => Color::Rgb(255, 80, 80),
-        "green" => Color::Rgb(0, 200, 120),
+        "green" => Color::Rgb(57, 255, 20),
         "blue" => Color::Rgb(100, 149, 237),
         "cyan" => Color::Rgb(0, 229, 255),
         "magenta" | "pink" => Color::Rgb(255, 41, 117),
@@ -437,7 +437,7 @@ pub fn build_detector() -> WireframeModel {
     let em_color = Color::Rgb(255, 165, 0);    // orange
     let si_color = Color::Rgb(100, 149, 237);   // cornflower blue
     let had_color = Color::Rgb(147, 112, 219);  // medium purple
-    let scint_color = Color::Rgb(0, 200, 120);  // green
+    let scint_color = Color::Rgb(57, 255, 20);   // phosphor green
 
     let mut z_cursor = 0.0_f64;
 

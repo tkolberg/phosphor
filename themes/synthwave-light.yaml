@@ -1,14 +1,14 @@
 palette:
-  bg: "#000000"
-  fg: "#e0d0ff"
-  heading: "#ff2975"
-  accent: "#00e5ff"
-  code_bg: "#1a1333"
-  muted: "#9977cc"
-  hot_pink: "#ff2975"
-  neon_cyan: "#00e5ff"
-  neon_purple: "#bf3fff"
-  warm_yellow: "#ffd319"
+  bg: "#f0ecf8"
+  fg: "#1a1333"
+  heading: "#c41858"
+  accent: "#0088aa"
+  code_bg: "#e0d8f0"
+  muted: "#8866bb"
+  hot_pink: "#c41858"
+  neon_cyan: "#0077aa"
+  neon_purple: "#7722bb"
+  warm_yellow: "#b8860b"
 
 slide:
   bg: "palette:bg"
@@ -44,13 +44,13 @@ highlights:
     fg: "palette:hot_pink"
     bold: true
   warning:
-    fg: "#ff4444"
+    fg: "#cc2222"
     bold: true
   quote:
     fg: "palette:accent"
     italic: true
   dim:
-    fg: "#332255"
+    fg: "#aa99cc"
 
 footer:
   fg: "palette:muted"

@@ -3,9 +3,9 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Axis, BarChart, Block, Chart, Dataset, GraphType};
+use ratatui::widgets::{Axis, Bar, BarChart, Block, Chart, Dataset, GraphType};
 
-use crate::chart::{ChartData, ChartSpec, ChartType};
+use crate::chart::{ChartData, ChartSpec};
 use crate::elements::{SegmentStyle, StyledText};
 use crate::render::ops::*;
 use crate::theme::Theme;
@@ -218,6 +218,11 @@ impl<'a> RenderEngine<'a> {
         frame.render_widget(ratatui::widgets::Paragraph::new(line), area);
     }
 
+    fn resolve_chart_color(name: &str) -> Color {
+        resolve_color_with_palette(name, &std::collections::HashMap::new())
+            .unwrap_or(Color::Cyan)
+    }
+
     fn render_chart(
         &mut self,
         spec: &ChartSpec,
@@ -244,12 +249,6 @@ impl<'a> RenderEngine<'a> {
             height: chart_height,
         };
 
-        let color = spec
-            .color
-            .as_deref()
-            .and_then(|c| resolve_color_with_palette(c, &std::collections::HashMap::new()))
-            .unwrap_or(Color::Cyan);
-
         let chart_style = Style::default();
         let chart_style = if let Some(bg) = self.bg {
             chart_style.bg(bg)
@@ -259,18 +258,46 @@ impl<'a> RenderEngine<'a> {
 
         match data {
             ChartData::Bar(bar_data) => {
-                let data_items: Vec<(&str, u64)> = bar_data
+                let color = spec
+                    .color
+                    .as_deref()
+                    .map(Self::resolve_chart_color)
+                    .unwrap_or(Color::Cyan);
+
+                let max_val = bar_data
+                    .values
+                    .iter()
+                    .copied()
+                    .fold(0.0_f64, f64::max);
+                let has_fractional = bar_data.values.iter().any(|v| v.fract() != 0.0);
+                let scale = if has_fractional && max_val > 0.0 {
+                    1000.0 / max_val
+                } else {
+                    1.0
+                };
+
+                let bars: Vec<Bar> = bar_data
                     .labels
                     .iter()
                     .zip(&bar_data.values)
-                    .map(|(l, v)| (l.as_str(), *v as u64))
+                    .map(|(l, v)| {
+                        let display = if has_fractional {
+                            format!("{:.2}", v)
+                        } else {
+                            format!("{}", *v as u64)
+                        };
+                        Bar::default()
+                            .label(l.as_str().into())
+                            .value((v * scale) as u64)
+                            .text_value(display)
+                            .style(Style::default().fg(color))
+                            .value_style(Style::default().fg(Color::White))
+                    })
                     .collect();
 
-                let (bar_width, bar_gap) = if !data_items.is_empty() {
-                    let n = data_items.len() as u16;
+                let n = bars.len() as u16;
+                let (bar_width, bar_gap) = if n > 0 {
                     let available = chart_area.width.saturating_sub(2);
-                    // Each bar takes bar_width + gap columns. Solve: n * (bw + gap) <= available
-                    // Try gap=1 first, increase bar_width to fill space
                     let gap = 1u16;
                     let bw = (available / n).saturating_sub(gap).max(1);
                     (bw, gap)
@@ -279,92 +306,192 @@ impl<'a> RenderEngine<'a> {
                 };
 
                 let widget = BarChart::default()
-                    .data(&data_items)
+                    .data(ratatui::widgets::BarGroup::default().bars(&bars))
                     .bar_width(bar_width)
                     .bar_gap(bar_gap)
-                    .bar_style(Style::default().fg(color))
-                    .value_style(Style::default().fg(Color::White))
                     .label_style(Style::default().fg(Color::Gray))
                     .style(chart_style);
 
                 frame.render_widget(widget, chart_area);
             }
-            ChartData::Line(line_data) => {
-                if line_data.points.is_empty() {
+            ChartData::MultiSeries(multi) => {
+                if multi.series.is_empty() || multi.series.iter().all(|s| s.points.is_empty()) {
                     self.cursor_row += chart_height;
                     return;
                 }
 
-                let x_min = line_data
-                    .points
-                    .iter()
-                    .map(|(x, _)| *x)
-                    .fold(f64::INFINITY, f64::min);
-                let x_max = line_data
-                    .points
-                    .iter()
-                    .map(|(x, _)| *x)
-                    .fold(f64::NEG_INFINITY, f64::max);
-                let y_min = line_data
-                    .points
-                    .iter()
-                    .map(|(_, y)| *y)
-                    .fold(f64::INFINITY, f64::min);
-                let y_max = line_data
-                    .points
-                    .iter()
-                    .map(|(_, y)| *y)
-                    .fold(f64::NEG_INFINITY, f64::max);
+                let graph_type = match spec.chart_type {
+                    crate::chart::ChartType::Scatter => GraphType::Scatter,
+                    _ => GraphType::Line,
+                };
 
-                // Add a little padding to y range
+                let (x_min, x_max, y_min, y_max) = self.compute_bounds(&multi.series);
+                let x_min = spec.x_min.unwrap_or(x_min);
+                let x_max = spec.x_max.unwrap_or(x_max);
+
                 let y_pad = (y_max - y_min) * 0.1;
                 let y_min = y_min - y_pad;
                 let y_max = y_max + y_pad;
 
-                let x_labels = vec![
-                    Span::raw(format!("{:.0}", x_min)),
-                    Span::raw(format!("{:.0}", x_max)),
-                ];
-                let y_labels = vec![
-                    Span::raw(format!("{:.1}", y_min)),
-                    Span::raw(format!("{:.1}", y_max)),
-                ];
+                let datasets: Vec<Dataset> = multi
+                    .series
+                    .iter()
+                    .map(|s| {
+                        let color = s
+                            .color
+                            .as_deref()
+                            .map(Self::resolve_chart_color)
+                            .unwrap_or(Color::Cyan);
+                        let mut ds = Dataset::default()
+                            .data(&s.points)
+                            .graph_type(graph_type)
+                            .marker(symbols::Marker::Braille)
+                            .style(Style::default().fg(color));
+                        ds = ds.name(s.name.clone());
+                        ds
+                    })
+                    .collect();
 
-                let dataset = Dataset::default()
-                    .data(&line_data.points)
-                    .graph_type(GraphType::Line)
-                    .marker(symbols::Marker::Braille)
-                    .style(Style::default().fg(color));
+                let x_axis = self.make_x_axis(x_min, x_max, spec);
+                let y_axis = self.make_y_axis(y_min, y_max, spec);
 
-                let x_axis = Axis::default()
-                    .bounds([x_min, x_max])
-                    .labels(x_labels)
-                    .style(Style::default().fg(Color::Gray));
-
-                let y_axis = Axis::default()
-                    .bounds([y_min, y_max])
-                    .labels(y_labels)
-                    .style(Style::default().fg(Color::Gray));
-
-                let mut x_axis = x_axis;
-                let mut y_axis = y_axis;
-                if let Some(ref label) = spec.x_label {
-                    x_axis = x_axis.title(Span::raw(label.clone()));
-                }
-                if let Some(ref label) = spec.y_label {
-                    y_axis = y_axis.title(Span::raw(label.clone()));
-                }
-
-                let widget = Chart::new(vec![dataset])
+                let mut widget = Chart::new(datasets)
                     .x_axis(x_axis)
                     .y_axis(y_axis)
                     .style(chart_style);
+
+                if multi.series.len() > 1 {
+                    widget = widget
+                        .hidden_legend_constraints((
+                            ratatui::layout::Constraint::Ratio(1, 2),
+                            ratatui::layout::Constraint::Ratio(1, 2),
+                        ))
+                        .legend_position(Some(
+                            ratatui::widgets::LegendPosition::TopRight,
+                        ));
+                }
+
+                frame.render_widget(widget, chart_area);
+            }
+            ChartData::Histogram(histo) => {
+                if histo.series.is_empty() {
+                    self.cursor_row += chart_height;
+                    return;
+                }
+
+                // Convert histogram bins to stepped line datasets
+                let stepped: Vec<crate::chart::Series> = histo
+                    .series
+                    .iter()
+                    .map(|hs| {
+                        let mut points = Vec::new();
+                        for (i, &count) in hs.counts.iter().enumerate() {
+                            let lo = hs.bin_edges[i];
+                            let hi = hs.bin_edges[i + 1];
+                            points.push((lo, count));
+                            points.push((hi, count));
+                        }
+                        crate::chart::Series {
+                            name: hs.name.clone(),
+                            color: hs.color.clone(),
+                            points,
+                        }
+                    })
+                    .collect();
+
+                let (x_min, x_max, _, y_max_raw) = self.compute_bounds(&stepped);
+                let x_min = spec.x_min.unwrap_or(x_min);
+                let x_max = spec.x_max.unwrap_or(x_max);
+                let y_min = 0.0;
+                let y_max = y_max_raw * 1.1;
+
+                let datasets: Vec<Dataset> = stepped
+                    .iter()
+                    .map(|s| {
+                        let color = s
+                            .color
+                            .as_deref()
+                            .map(Self::resolve_chart_color)
+                            .unwrap_or(Color::Cyan);
+                        let mut ds = Dataset::default()
+                            .data(&s.points)
+                            .graph_type(GraphType::Line)
+                            .marker(symbols::Marker::Braille)
+                            .style(Style::default().fg(color));
+                        ds = ds.name(s.name.clone());
+                        ds
+                    })
+                    .collect();
+
+                let x_axis = self.make_x_axis(x_min, x_max, spec);
+                let y_axis = self.make_y_axis(y_min, y_max, spec);
+
+                let mut widget = Chart::new(datasets)
+                    .x_axis(x_axis)
+                    .y_axis(y_axis)
+                    .style(chart_style);
+
+                if histo.series.len() > 1 {
+                    widget = widget
+                        .hidden_legend_constraints((
+                            ratatui::layout::Constraint::Ratio(1, 2),
+                            ratatui::layout::Constraint::Ratio(1, 2),
+                        ))
+                        .legend_position(Some(
+                        ratatui::widgets::LegendPosition::TopRight,
+                    ));
+                }
 
                 frame.render_widget(widget, chart_area);
             }
         }
 
         self.cursor_row += height;
+    }
+
+    fn compute_bounds(&self, series: &[crate::chart::Series]) -> (f64, f64, f64, f64) {
+        let all_points = series.iter().flat_map(|s| s.points.iter());
+        let mut x_min = f64::INFINITY;
+        let mut x_max = f64::NEG_INFINITY;
+        let mut y_min = f64::INFINITY;
+        let mut y_max = f64::NEG_INFINITY;
+        for &(x, y) in all_points {
+            x_min = x_min.min(x);
+            x_max = x_max.max(x);
+            y_min = y_min.min(y);
+            y_max = y_max.max(y);
+        }
+        (x_min, x_max, y_min, y_max)
+    }
+
+    fn make_x_axis(&self, x_min: f64, x_max: f64, spec: &ChartSpec) -> Axis<'static> {
+        let labels = vec![
+            Span::raw(format_axis_label(x_min)),
+            Span::raw(format_axis_label(x_max)),
+        ];
+        let mut axis = Axis::default()
+            .bounds([x_min, x_max])
+            .labels(labels)
+            .style(Style::default().fg(Color::Gray));
+        if let Some(ref label) = spec.x_label {
+            axis = axis.title(Span::raw(label.clone()));
+        }
+        axis
+    }
+
+    fn make_y_axis(&self, y_min: f64, y_max: f64, spec: &ChartSpec) -> Axis<'static> {
+        let labels = vec![
+            Span::raw(format_axis_label(y_min)),
+            Span::raw(format_axis_label(y_max)),
+        ];
+        let mut axis = Axis::default()
+            .bounds([y_min, y_max])
+            .labels(labels)
+            .style(Style::default().fg(Color::Gray));
+        if let Some(ref label) = spec.y_label {
+            axis = axis.title(Span::raw(label.clone()));
+        }
+        axis
     }
 
     fn render_image(
@@ -462,5 +589,18 @@ impl<'a> RenderEngine<'a> {
         }
 
         style
+    }
+}
+
+fn format_axis_label(val: f64) -> String {
+    let abs = val.abs();
+    if abs == 0.0 {
+        "0".into()
+    } else if abs >= 1000.0 || abs < 0.01 {
+        format!("{:.1e}", val)
+    } else if abs >= 1.0 {
+        format!("{:.1}", val)
+    } else {
+        format!("{:.3}", val)
     }
 }

@@ -345,8 +345,8 @@ fn lower_chart(spec: &chart::ChartSpec, base_dir: &std::path::Path, ctx: &LowerC
                 });
                 ops.push(RenderOp::Spacer { lines: 1 });
             }
-            // Use ~60% of available height for chart
-            let chart_height = (ctx.window_height as f32 * 0.6) as u16;
+            // Use ~75% of available height for chart
+            let chart_height = (ctx.window_height as f32 * 0.75) as u16;
             let chart_height = chart_height.max(8);
             ops.push(RenderOp::RenderChart {
                 spec: spec.clone(),
